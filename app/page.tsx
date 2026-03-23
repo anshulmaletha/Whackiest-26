@@ -19,13 +19,28 @@ function buildOrientation(sd: SiteData): string {
   const parts: string[] = [`This is ${sd.siteName}.`]
   const keys = Object.keys(sd.keyInfo ?? {})
   if (keys.length > 0) {
-    parts.push(`I found ${keys.slice(0, 4).map((k) => k.replace(/_/g, " ")).join(", ")}.`)
+    const labels = keys.slice(0, 3).map((k) => k.replace(/_/g, " "))
+    parts.push(`I found ${labels.join(", ")}.`)
+    parts.push("You can ask for any of them, or say go back.")
+  } else if (sd.headings && sd.headings.length > 0) {
+    parts.push(`${sd.headings.length} sections. You can ask me about this page, or say go back.`)
+  } else {
+    parts.push("Ask me anything about this page.")
   }
-  if (sd.headings && sd.headings.length > 0) {
-    parts.push(`${sd.headings.length} sections.`)
-  }
-  parts.push("Ask for any of these, or say help.")
   return parts.join(" ")
+}
+
+function describeSnippet(si: Record<string, string>): string {
+  const priority = ["phone", "hours", "rating", "price", "address", "email"]
+  const found = priority.filter((f) => si[f])
+  if (found.length === 0) return ""
+  const labels = found.slice(0, 2).map((f) => f.replace(/_/g, " "))
+  return labels.join(" and ")
+}
+
+function isStrongResult(si?: Record<string, string>): boolean {
+  if (!si) return false
+  return Object.keys(si).length >= 3
 }
 
 // ── Ordinal + navigation parser ──
@@ -190,16 +205,16 @@ export default function Home() {
         setFocusedIndex(0)
         const top = data.results[0] as SearchResult
         const si = top.snippetInfo ?? {}
-        const fields = Object.keys(si)
-        let msg = `Found ${data.results.length} results. First is ${top.title}.`
-        // Announce at most 2 most important fields — keep it short and natural
-        const priority = ["phone", "hours", "rating", "price", "address", "email"]
-        const found = priority.filter((f) => si[f])
-        if (found.length > 0) {
-          const labels = found.slice(0, 2).map((f) => f.replace(/_/g, " "))
-          msg += ` I found ${labels.join(" and ")}.`
+        const snippet = describeSnippet(si)
+
+        let msg = `I found ${data.results.length} results. The first is ${top.title}.`
+        if (snippet) msg += ` I found ${snippet}.`
+
+        if (isStrongResult(si)) {
+          msg += " Would you like me to open it?"
+        } else {
+          msg += " You can say open this one, try the next, or open the second result."
         }
-        msg += " Say open this one, or try the next."
         return msg
       }
       return "No results found. Try a different search."
@@ -421,8 +436,29 @@ export default function Home() {
       return kv || sd.summary
     }
 
-    // Simple yes/ok/sure/thanks — acknowledge, don't trigger anything
-    if (/^(ok(ay)?|sure|yes|yeah|yep|no|nah|nope|thanks|thank you|done|alright)\.?$/i.test(lower)) return ""
+    // Thanks/done — just acknowledge
+    if (/^(thanks|thank you|done)\.?$/i.test(lower)) return ""
+
+    // "no" / "nah" — if results exist, treat as "next"; otherwise ignore
+    if (/^(no|nah|nope|not this|not really)\.?$/i.test(lower)) {
+      const r = resultsRef.current
+      if (r.length > 0 && !currentSiteRef.current) {
+        const curIdx = r.findIndex((x) => x.id === selectedResultIdRef.current)
+        const nextIdx = Math.min(curIdx + 1, r.length - 1)
+        if (nextIdx !== curIdx) {
+          setFocusedIndex(nextIdx)
+          setSelectedResultId(r[nextIdx].id)
+          const si = r[nextIdx].snippetInfo ?? {}
+          const snippet = describeSnippet(si)
+          let msg = `The next result is ${r[nextIdx].title}.`
+          if (snippet) msg += ` I found ${snippet}.`
+          msg += " You can say open this one, or try another."
+          return msg
+        }
+        return "That's the last result. You can say go back to search again."
+      }
+      return ""
+    }
 
     return null
   }
@@ -440,28 +476,45 @@ export default function Home() {
     const cmd = handleLocalCommand(lower)
     if (cmd !== null) return cmd
 
-    // 2. Result navigation (when results exist)
     const r = resultsRef.current
-    if (r.length > 0) {
+    const hasResults = r.length > 0
+    const hasSiteOpen = !!currentSiteRef.current
+
+    // 2. Affirmative responses — context-aware
+    //    "yes" / "sure" / "open it" / "do it" / "go ahead"
+    if (hasResults && !hasSiteOpen && /^(yes|yeah|yep|sure|ok(ay)?|open it|do it|go ahead|please|go for it)\.?$/i.test(lower)) {
+      const idx = Math.max(0, focusedIndex)
+      return `Opening ${r[idx].title}. ` + await doOpenResult(r[idx])
+    }
+
+    // 3. Result navigation (when results exist)
+    if (hasResults) {
       const nav = parseNav(lower)
       if (nav) {
         const curIdx = r.findIndex((x) => x.id === selectedResultIdRef.current)
         const idx = resolveIdx(nav, curIdx, r.length)
-        if (nav === "current" || /\b(open|go|try|choose|select|visit|pick|switch|click)\b/.test(lower)) {
+        const wantsOpen = nav === "current" || /\b(open|go|try|choose|select|visit|pick|switch|click)\b/.test(lower)
+        if (wantsOpen) {
           return `Opening ${r[idx].title}. ` + await doOpenResult(r[idx])
         }
+        // Move focus — describe the result conversationally
         setFocusedIndex(idx)
         setSelectedResultId(r[idx].id)
-        return `Result ${idx + 1}: ${r[idx].title}. Say open to go there.`
+        const si = r[idx].snippetInfo ?? {}
+        const snippet = describeSnippet(si)
+        let msg = `Result ${idx + 1} is ${r[idx].title}.`
+        if (snippet) msg += ` I found ${snippet}.`
+        msg += " You can say open this one, or try another."
+        return msg
       }
     }
 
-    // 3. If site is open and not obviously a new search → ask about site
-    if (currentSiteRef.current && !/\b(search|find|look for|look up)\b/i.test(lower)) {
+    // 4. If site is open and not obviously a new search → ask about site
+    if (hasSiteOpen && !/\b(search|find|look for|look up)\b/i.test(lower)) {
       return `Checking. ` + await doAskSite(text)
     }
 
-    // 4. Default: search (with Gemini refinement)
+    // 5. Default: search (with Gemini refinement)
     return `Searching. ` + await doSearchWithRefine(text)
   }
 
@@ -577,7 +630,7 @@ export default function Home() {
             routingInFlightRef.current = false
           }).catch(() => { routingInFlightRef.current = false })
 
-          // Safety: if no tool is called within 5s AND agent isn't already speaking
+          // Safety: if no tool is called within 3s AND agent isn't already speaking
           if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current)
           safetyTimerRef.current = setTimeout(async () => {
             // Don't fire if: agent is speaking, tool is in flight, or text was already handled
@@ -599,7 +652,7 @@ export default function Home() {
                 speakText(response)
               }
             }
-          }, 5000)
+          }, 3000)
         }
         if (msg?.source === "ai" && msg?.message) {
           if (isAgentGarbage(msg.message)) {
