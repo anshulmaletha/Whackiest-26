@@ -466,7 +466,7 @@ export default function Home() {
     //    "yes" / "sure" / "open it" / "do it" / "go ahead"
     if (hasResults && !hasSiteOpen && /^(yes|yeah|yep|sure|ok(ay)?|open it|do it|go ahead|please|go for it)\.?$/i.test(lower)) {
       const idx = Math.max(0, focusedIndex)
-      return `Opening ${r[idx].title}. ` + await doOpenResult(r[idx])
+      return await doOpenResult(r[idx])
     }
 
     // 3. Result navigation (when results exist)
@@ -477,7 +477,7 @@ export default function Home() {
         const idx = resolveIdx(nav, curIdx, r.length)
         const wantsOpen = nav === "current" || /\b(open|go|try|choose|select|visit|pick|switch|click)\b/.test(lower)
         if (wantsOpen) {
-          return `Opening ${r[idx].title}. ` + await doOpenResult(r[idx])
+          return await doOpenResult(r[idx])
         }
         // Move focus — describe the result conversationally
         setFocusedIndex(idx)
@@ -493,11 +493,11 @@ export default function Home() {
 
     // 4. If site is open and not obviously a new search → ask about site
     if (hasSiteOpen && !/\b(search|find|look for|look up)\b/i.test(lower)) {
-      return `Checking. ` + await doAskSite(text)
+      return await doAskSite(text)
     }
 
     // 5. Default: search (with Gemini refinement)
-    return `Searching. ` + await doSearchWithRefine(text)
+    return await doSearchWithRefine(text)
   }
 
   routeInputRef.current = routeInput
