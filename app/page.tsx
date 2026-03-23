@@ -519,40 +519,13 @@ export default function Home() {
     clientTools: {
       handle_input: async (params: { text: string }) => toolRoute(params.text),
 
-      search_web: async (params: { query?: string }) => {
-        cancelSafety()
-        toolInFlightRef.current = true
-        try {
-          const q = params.query || pendingTextRef.current || ""
-          if (!q) return "What would you like to search for?"
-          const response = `Searching. ` + await doSearchWithRefine(q)
-          if (response) setLastAnswer(response)
-          return response
-        } finally { toolInFlightRef.current = false }
-      },
-      open_result: async (params: { index?: number }) => {
-        cancelSafety()
-        toolInFlightRef.current = true
-        try {
-          const r = resultsRef.current
-          if (r.length === 0) return "No results to open."
-          const idx = typeof params.index === "number" ? Math.max(0, Math.min(r.length - 1, params.index - 1)) : 0
-          const response = `Opening ${r[idx].title}. ` + await doOpenResult(r[idx])
-          if (response) setLastAnswer(response)
-          return response
-        } finally { toolInFlightRef.current = false }
-      },
-      ask_site: async (params: { question?: string }) => {
-        cancelSafety()
-        toolInFlightRef.current = true
-        try {
-          const q = params.question || ""
-          if (!q) return "What would you like to know?"
-          const response = `Checking. ` + await doAskSite(q)
-          if (response) setLastAnswer(response)
-          return response
-        } finally { toolInFlightRef.current = false }
-      },
+      // Legacy tools — ALL delegate to toolRoute to prevent double execution
+      search_web: async (params: { query?: string }) =>
+        toolRoute(params.query || pendingTextRef.current || "search"),
+      open_result: async (params: { index?: number }) =>
+        toolRoute(pendingTextRef.current || `open result ${params.index ?? 1}`),
+      ask_site: async (params: { question?: string }) =>
+        toolRoute(params.question || pendingTextRef.current || "tell me about this site"),
     },
     onConnect: () => {
       reconnectCountRef.current = 0
