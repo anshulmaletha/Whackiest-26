@@ -3,6 +3,9 @@
 import { useState, useCallback, useRef } from "react"
 import { useConversation } from "@elevenlabs/react"
 import type { SearchResult, SiteData, TranscriptItem } from "@/types"
+import { answerFromSiteContext } from "@/lib/formatter"
+import { speakText, stopSpeaking } from "@/lib/speak"
+import { getCachedSite, setCachedSite, hasCachedSite } from "@/lib/site-cache"
 import SearchBar from "@/components/SearchBar"
 import ResultsList from "@/components/ResultsList"
 import SitePanel from "@/components/SitePanel"
@@ -14,27 +17,28 @@ export default function Home() {
   const [query, setQuery] = useState("")
   const [results, setResults] = useState<SearchResult[]>([])
   const [selectedResultId, setSelectedResultId] = useState<string | null>(null)
-  const [selectedResult, setSelectedResult] = useState<SearchResult | null>(null)
   const [currentSite, setCurrentSite] = useState<SiteData | null>(null)
   const [transcript, setTranscript] = useState<TranscriptItem[]>([])
   const [isLoadingResults, setIsLoadingResults] = useState(false)
   const [isLoadingSite, setIsLoadingSite] = useState(false)
   const [lastAnswer, setLastAnswer] = useState<string | null>(null)
 
-  // Keep a ref to current site data so clientTools callbacks always read fresh state
   const currentSiteRef = useRef<SiteData | null>(null)
   currentSiteRef.current = currentSite
   const resultsRef = useRef<SearchResult[]>([])
   resultsRef.current = results
 
-  // ─── Core actions ───────────────────────────────────────────────────────────
+  function addToTranscript(role: "user" | "assistant", text: string) {
+    setTranscript((prev) => [...prev, { role, text }])
+  }
+
+  // ─── Search (UI shows all results, voice only says count + top 1) ──────────
 
   const handleSearch = useCallback(async (q: string) => {
     setIsLoadingResults(true)
     setResults([])
     setCurrentSite(null)
     setSelectedResultId(null)
-    setSelectedResult(null)
     addToTranscript("user", q)
 
     try {
@@ -44,28 +48,38 @@ export default function Home() {
         body: JSON.stringify({ query: q }),
       })
       const data = await res.json()
-      if (data.results) {
+      if (data.results?.length) {
         setResults(data.results)
-        const summary = data.results
-          .map((r: SearchResult) => `Result ${r.id}: ${r.title}${r.source ? ` (${r.source})` : ""}`)
-          .join(". ")
-        addToTranscript("assistant", `Found ${data.results.length} results. ${summary}`)
+        const top = data.results[0] as SearchResult
+        const shortMsg = `Found ${data.results.length} results. Top: ${top.title}.`
+        addToTranscript("assistant", shortMsg)
       } else {
-        addToTranscript("assistant", data.error ?? "No results found.")
+        addToTranscript("assistant", "No results found.")
       }
     } catch {
-      addToTranscript("assistant", "Search failed. Please check your connection.")
+      addToTranscript("assistant", "Search failed.")
     } finally {
       setIsLoadingResults(false)
     }
   }, [])
 
+  // ─── Open result (with session cache) ──────────────────────────────────────
+
   const handleOpenResult = useCallback(async (result: SearchResult) => {
     setSelectedResultId(result.id)
-    setSelectedResult(result)
     setIsLoadingSite(true)
     setCurrentSite(null)
-    addToTranscript("user", `Opening: ${result.title}`)
+    addToTranscript("user", `Open: ${result.title}`)
+
+    // Cache hit — skip Firecrawl entirely
+    const cached = getCachedSite(result.url)
+    if (cached) {
+      setCurrentSite(cached)
+      setIsLoadingSite(false)
+      const shortMsg = `${cached.siteName}. ${cached.summary.slice(0, 100)}`
+      addToTranscript("assistant", shortMsg)
+      return
+    }
 
     try {
       const res = await fetch("/api/site", {
@@ -75,103 +89,80 @@ export default function Home() {
       })
       const data = await res.json()
       if (data.siteData) {
-        setCurrentSite(data.siteData)
         const sd: SiteData = data.siteData
-        const parts: string[] = [`This is ${sd.siteName}. ${sd.summary}`]
-        if (sd.phone) parts.push(`Phone: ${sd.phone}.`)
-        if (sd.address) parts.push(`Address: ${sd.address}.`)
-        if (sd.hours) parts.push(`Hours: ${sd.hours}.`)
-        addToTranscript("assistant", parts.join(" "))
+        setCachedSite(result.url, sd)
+        setCurrentSite(sd)
+        const shortMsg = `${sd.siteName}. ${sd.summary.slice(0, 100)}`
+        addToTranscript("assistant", shortMsg)
       } else {
-        addToTranscript("assistant", data.error ?? "Could not read the site.")
+        addToTranscript("assistant", "Could not read site.")
       }
     } catch {
-      addToTranscript("assistant", "Failed to load site data.")
+      addToTranscript("assistant", "Failed to load site.")
     } finally {
       setIsLoadingSite(false)
     }
   }, [])
 
-  const handleAsk = useCallback(
+  // ─── Quick action (local logic + free browser TTS, no ElevenLabs) ──────────
+
+  const handleQuickAction = useCallback(
     async (question: string) => {
-      if (!currentSite) {
-        addToTranscript("assistant", "Please open a result first.")
+      const sd = currentSiteRef.current
+      if (!sd) {
+        addToTranscript("assistant", "Open a result first.")
         return
       }
-      addToTranscript("user", question)
 
-      try {
-        const res = await fetch("/api/ask", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ question, siteContext: currentSite }),
-        })
-        const data = await res.json()
-        const answer = data.answer ?? "I couldn't find an answer."
-        addToTranscript("assistant", answer)
-        setLastAnswer(answer)
-      } catch {
-        addToTranscript("assistant", "Failed to answer the question.")
-      }
+      addToTranscript("user", question)
+      const answer = answerFromSiteContext(question, sd)
+      addToTranscript("assistant", answer)
+      setLastAnswer(answer)
+
+      // Free TTS — no ElevenLabs credits
+      speakText(answer)
     },
-    [currentSite]
+    []
   )
 
-  function addToTranscript(role: "user" | "assistant", text: string) {
-    setTranscript((prev) => [...prev, { role, text }])
-  }
-
-  // ─── ElevenLabs Conversational Agent ────────────────────────────────────────
+  // ─── ElevenLabs Agent (ultra-short responses, minimal tool returns) ────────
 
   const conversation = useConversation({
     clientTools: {
       search_web: async (params: { query: string }) => {
         await handleSearch(params.query)
         const r = resultsRef.current
-        if (r.length === 0) return "No results found."
+        if (r.length === 0) return "No results."
+        // Return ONLY top 3 titles — minimal text for agent to speak
         return r
-          .map((res) => `Result ${res.id}: ${res.title}. ${res.description}`)
-          .join(" | ")
+          .slice(0, 3)
+          .map((res) => `${res.id}. ${res.title}`)
+          .join(". ")
       },
 
       open_result: async (params: { url?: string; result_id?: string }) => {
         let target: SearchResult | undefined
-
         if (params.result_id) {
           target = resultsRef.current.find((r) => r.id === params.result_id)
         }
         if (!target && params.url) {
           target = resultsRef.current.find((r) => r.url === params.url)
         }
-        // Fall back to first result
         if (!target) target = resultsRef.current[0]
-
-        if (!target) return "No result available to open."
+        if (!target) return "No result to open."
 
         await handleOpenResult(target)
         const sd = currentSiteRef.current
-        if (!sd) return "Could not load the site."
-
-        const parts = [`${sd.siteName}: ${sd.summary}`]
-        if (sd.phone) parts.push(`Phone: ${sd.phone}`)
-        if (sd.address) parts.push(`Address: ${sd.address}`)
-        return parts.join(". ")
+        if (!sd) return "Could not load site."
+        // 1 sentence only
+        return `${sd.siteName}: ${sd.summary.slice(0, 120)}`
       },
 
       ask_site: async (params: { question: string }) => {
         const sd = currentSiteRef.current
-        if (!sd) return "No site is currently open."
-
-        const res = await fetch("/api/ask", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ question: params.question, siteContext: sd }),
-        })
-        const data = await res.json()
-        const answer = data.answer ?? "I couldn't find an answer."
-        setLastAnswer(answer)
-        addToTranscript("assistant", answer)
-        return answer
+        if (!sd) return "No site open."
+        // Local answer — no external API, just keyword match
+        return answerFromSiteContext(params.question, sd)
       },
     },
     onMessage: (msg) => {
@@ -183,7 +174,6 @@ export default function Home() {
     },
     onError: (err) => {
       console.error("ElevenLabs error:", err)
-      addToTranscript("assistant", "Voice assistant encountered an error.")
     },
   })
 
@@ -192,33 +182,41 @@ export default function Home() {
 
   async function toggleVoice() {
     if (isConnected) {
+      stopSpeaking()
       await conversation.endSession()
     } else {
-    try {
-      await navigator.mediaDevices.getUserMedia({ audio: true })
-      await conversation.startSession({ agentId: AGENT_ID, connectionType: "webrtc" })
-      addToTranscript("assistant", "Hello! I'm Navia. How can I help you today?")
-    } catch (e) {
-      console.error("Failed to start voice session:", e)
-      addToTranscript("assistant", "Microphone access is required for voice mode.")
-    }
+      try {
+        await navigator.mediaDevices.getUserMedia({ audio: true })
+        await conversation.startSession({
+          agentId: AGENT_ID,
+          connectionType: "webrtc",
+          overrides: {
+            agent: {
+              prompt: {
+                prompt: SYSTEM_PROMPT,
+              },
+              firstMessage: "Hi, I'm Navia. What would you like to find?",
+            },
+          },
+        })
+      } catch (e) {
+        console.error("Failed to start voice session:", e)
+        addToTranscript("assistant", "Microphone access required.")
+      }
     }
   }
 
-  // ─── Render ──────────────────────────────────────────────────────────────────
+  // ─── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <div className="app">
-      {/* Nav */}
       <header className="nav">
-        <span className="nav__logo">NAVIA</span>
+        <span className="nav__logo">Navia</span>
         <span className="nav__tagline">Voice-first web access</span>
         <span className="nav__spacer" />
       </header>
 
-      {/* Main layout */}
       <main className="layout">
-        {/* Left column — search + results */}
         <section className="col-left" aria-label="Search and results">
           <SearchBar
             query={query}
@@ -236,17 +234,15 @@ export default function Home() {
           />
         </section>
 
-        {/* Right column — site panel */}
         <section className="col-right" aria-label="Site details">
           <SitePanel
             siteData={currentSite}
             isLoading={isLoadingSite}
-            onQuickAction={handleAsk}
+            onQuickAction={handleQuickAction}
           />
         </section>
       </main>
 
-      {/* Dynamic Island voice assistant */}
       <DynamicIsland
         transcript={transcript}
         isListening={isListening}
@@ -258,3 +254,23 @@ export default function Home() {
     </div>
   )
 }
+
+// Ultra-short system prompt to minimize ElevenLabs output tokens
+const SYSTEM_PROMPT = `You are Navia, a voice assistant for blind users to browse the web.
+
+RULES — follow strictly:
+- Maximum 2 sentences per response. Never more.
+- Do not repeat information the user already heard.
+- Do not list all search results. Say the count and top result only. Example: "Found 3 results. First is Amit Plumbing."
+- When opening a site, say only the name and one sentence about it.
+- When asked for phone/address/hours, answer with just the data. Example: "The phone number is 03-123-4567."
+- Never say "I found the following results" or similar filler.
+- Never ask "would you like to know more" unless the user seems lost.
+- If you don't know, say "I don't have that info" — nothing more.
+- Prefer answering from tool data. Do not guess or fabricate.
+- Keep it short. The user relies on voice, every extra word costs time.
+
+TOOLS:
+- search_web: searches the web. Returns top results.
+- open_result: opens a result and extracts site info.
+- ask_site: answers a question from the currently open site.`
