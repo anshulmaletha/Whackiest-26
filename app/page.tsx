@@ -104,6 +104,10 @@ export default function Home() {
   const routingInFlightRef = useRef(false)
   const safetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Voice lock — ensures only one voice output at a time
+  const toolInFlightRef = useRef(false)
+  const agentSpeakingRef = useRef(false)
+
   // ── Noise filter — ONLY actual filler/garbage, NOT valid short queries ──
   const FILLER_WORDS = /^(um+|uh+|hmm*|ah+|oh+|eh+|huh|mhm|like|so|well|right|hey|hi|hello|bye|you know|i see|got it|alright|hm|ha|ho)\.?$/i
 
@@ -488,22 +492,27 @@ export default function Home() {
 
   async function toolRoute(text: string): Promise<string> {
     cancelSafety()
+    toolInFlightRef.current = true
 
-    // If proactive routing already computed the answer, use it (no double execution)
-    const cached = await waitForRouting()
-    if (cached) {
+    try {
+      // If proactive routing already computed the answer, use it (no double execution)
+      const cached = await waitForRouting()
+      if (cached) {
+        pendingResponseRef.current = null
+        routingInFlightRef.current = false
+        if (cached) setLastAnswer(cached)
+        return cached
+      }
+
+      // Proactive route wasn't started or failed — route now (only execution)
+      const response = await routeInputRef.current(text)
       pendingResponseRef.current = null
       routingInFlightRef.current = false
-      if (cached) setLastAnswer(cached)
-      return cached
+      if (response) setLastAnswer(response)
+      return response || "Done."
+    } finally {
+      toolInFlightRef.current = false
     }
-
-    // Proactive route wasn't started or failed — route now (only execution)
-    const response = await routeInputRef.current(text)
-    pendingResponseRef.current = null
-    routingInFlightRef.current = false
-    if (response) setLastAnswer(response)
-    return response || "Done."
   }
 
   const conversation = useConversation({
@@ -512,28 +521,37 @@ export default function Home() {
 
       search_web: async (params: { query?: string }) => {
         cancelSafety()
-        const q = params.query || pendingTextRef.current || ""
-        if (!q) return "What would you like to search for?"
-        const response = `Searching. ` + await doSearchWithRefine(q)
-        if (response) setLastAnswer(response)
-        return response
+        toolInFlightRef.current = true
+        try {
+          const q = params.query || pendingTextRef.current || ""
+          if (!q) return "What would you like to search for?"
+          const response = `Searching. ` + await doSearchWithRefine(q)
+          if (response) setLastAnswer(response)
+          return response
+        } finally { toolInFlightRef.current = false }
       },
       open_result: async (params: { index?: number }) => {
         cancelSafety()
-        const r = resultsRef.current
-        if (r.length === 0) return "No results to open."
-        const idx = typeof params.index === "number" ? Math.max(0, Math.min(r.length - 1, params.index - 1)) : 0
-        const response = `Opening ${r[idx].title}. ` + await doOpenResult(r[idx])
-        if (response) setLastAnswer(response)
-        return response
+        toolInFlightRef.current = true
+        try {
+          const r = resultsRef.current
+          if (r.length === 0) return "No results to open."
+          const idx = typeof params.index === "number" ? Math.max(0, Math.min(r.length - 1, params.index - 1)) : 0
+          const response = `Opening ${r[idx].title}. ` + await doOpenResult(r[idx])
+          if (response) setLastAnswer(response)
+          return response
+        } finally { toolInFlightRef.current = false }
       },
       ask_site: async (params: { question?: string }) => {
         cancelSafety()
-        const q = params.question || ""
-        if (!q) return "What would you like to know?"
-        const response = `Checking. ` + await doAskSite(q)
-        if (response) setLastAnswer(response)
-        return response
+        toolInFlightRef.current = true
+        try {
+          const q = params.question || ""
+          if (!q) return "What would you like to know?"
+          const response = `Checking. ` + await doAskSite(q)
+          if (response) setLastAnswer(response)
+          return response
+        } finally { toolInFlightRef.current = false }
       },
     },
     onConnect: () => {
@@ -544,15 +562,25 @@ export default function Home() {
     },
     onDisconnect: () => {
       setVoiceMode("idle")
+      agentSpeakingRef.current = false
+      toolInFlightRef.current = false
       if (intentionalEndRef.current) { intentionalEndRef.current = false; return }
-      if (reconnectCountRef.current < 3 && hasConnectedOnceRef.current) {
+      if (reconnectCountRef.current < 3 && hasConnectedOnceRef.current && !sessionStartingRef.current) {
         reconnectCountRef.current++
         setTimeout(() => startSession(), 1500)
       }
     },
     onModeChange: ({ mode }) => {
-      if (mode === "speaking") { stopSpeaking(); setVoiceMode("speaking") }
-      else if (mode === "listening") setVoiceMode("listening")
+      if (mode === "speaking") {
+        stopSpeaking()
+        agentSpeakingRef.current = true
+        setVoiceMode("speaking")
+        // Agent is now talking — cancel safety timer, it's handled
+        cancelSafety()
+      } else if (mode === "listening") {
+        agentSpeakingRef.current = false
+        setVoiceMode("listening")
+      }
     },
     onMessage: (msg) => {
       try {
@@ -576,9 +604,11 @@ export default function Home() {
             routingInFlightRef.current = false
           }).catch(() => { routingInFlightRef.current = false })
 
-          // Safety: if no tool is called within 10s, announce via ARIA (last resort)
+          // Safety: if no tool is called within 5s AND agent isn't already speaking
           if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current)
           safetyTimerRef.current = setTimeout(async () => {
+            // Don't fire if: agent is speaking, tool is in flight, or text was already handled
+            if (agentSpeakingRef.current || toolInFlightRef.current) return
             const pending = pendingTextRef.current
             if (!pending) return
             pendingTextRef.current = null
@@ -591,9 +621,12 @@ export default function Home() {
             if (response) {
               addToTranscript("assistant", response)
               announce(response)
-              speakText(response)
+              // Only use browser TTS if ElevenLabs is NOT connected
+              if (conversation.status !== "connected") {
+                speakText(response)
+              }
             }
-          }, 10000)
+          }, 5000)
         }
         if (msg?.source === "ai" && msg?.message) {
           if (isAgentGarbage(msg.message)) {
@@ -613,7 +646,12 @@ export default function Home() {
   endSessionRef.current = conversation.endSession
   const isConnected = conversation.status === "connected"
 
+  const sessionStartingRef = useRef(false)
+
   async function startSession() {
+    // Prevent double session starts
+    if (sessionStartingRef.current || conversation.status === "connected") return
+    sessionStartingRef.current = true
     setVoiceMode("connecting")
     announce("Connecting.")
     try {
@@ -626,6 +664,8 @@ export default function Home() {
     } catch {
       setVoiceMode("idle")
       announce("Could not connect. Check microphone.")
+    } finally {
+      sessionStartingRef.current = false
     }
   }
 
