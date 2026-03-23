@@ -496,8 +496,8 @@ export default function Home() {
       return await doAskSite(text)
     }
 
-    // 5. Default: search (with Gemini refinement)
-    return await doSearchWithRefine(text)
+    // 5. Default: search directly (skip intent refinement for speed)
+    return await doSearch(text)
   }
 
   routeInputRef.current = routeInput
@@ -524,21 +524,24 @@ export default function Home() {
     return response
   }
 
-  const TOOL_TIMEOUT_MS = 7_000
+  const TOOL_TIMEOUT_MS = 4_500
 
-  async function toolHandler(toolName: string, paramText?: string): Promise<string> {
-    console.log(`[navia] TOOL CALLED: ${toolName}, param: "${paramText}", hasPending: ${!!turnPromiseRef.current}`)
-    if (!turnPromiseRef.current && paramText) {
-      void precompute(paramText, turnIdRef.current)
-    }
-
+  async function toolHandler(toolName: string): Promise<string> {
     const pending = turnPromiseRef.current
     if (!pending) {
-      const cached = turnResponseRef.current || "Ready. What would you like to do?"
-      showResponse(cached)
-      return cached
+      await new Promise((r) => setTimeout(r, 300))
+      const p2 = turnPromiseRef.current
+      if (!p2) {
+        const cached = turnResponseRef.current || "What would you like to do?"
+        showResponse(cached)
+        return cached
+      }
+      return awaitWithTimeout(p2)
     }
+    return awaitWithTimeout(pending)
+  }
 
+  async function awaitWithTimeout(pending: Promise<string>): Promise<string> {
     let timedOut = false
     const result = await Promise.race([
       pending,
@@ -548,28 +551,24 @@ export default function Home() {
     ])
 
     if (result && !timedOut) {
-      console.log(`[navia] TOOL RETURNING (in time): "${result.slice(0, 80)}..."`)
       showResponse(result)
       return result
     }
 
-    console.warn(`[navia] TOOL TIMED OUT after ${TOOL_TIMEOUT_MS}ms, returning ack`)
     pending.then((response) => {
       if (!response) return
       showResponse(response)
-      if (!connectedRef.current) return
-      console.log(`[navia] emergency TTS: "${response.slice(0, 80)}..."`)
-      void speakText(response)
+      if (connectedRef.current) void speakText(response)
     })
-    return "Working on it. One moment."
+    return "One moment please."
   }
 
   const conversation = useConversation({
     clientTools: {
-      handle_input: async (params: { text?: string }) => toolHandler("handle_input", params.text),
-      search_web: async (params: { query?: string }) => toolHandler("search_web", params.query),
+      handle_input: async () => toolHandler("handle_input"),
+      search_web: async () => toolHandler("search_web"),
       open_result: async () => toolHandler("open_result"),
-      ask_site: async (params: { question?: string }) => toolHandler("ask_site", params.question),
+      ask_site: async () => toolHandler("ask_site"),
     },
     onConnect: () => {
       console.log("[navia] CONNECTED")
