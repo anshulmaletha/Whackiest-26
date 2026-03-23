@@ -1,19 +1,19 @@
 import type { Metadata } from "next"
-import { Space_Grotesk, Space_Mono } from "next/font/google"
+import { Inter, IBM_Plex_Serif } from "next/font/google"
 import "./globals.css"
 
-const spaceGrotesk = Space_Grotesk({
+const inter = Inter({
   subsets: ["latin"],
-  weight: ["300", "400", "500", "600", "700"],
+  weight: ["400", "500", "600", "700"],
   variable: "--font-sans",
   display: "swap",
 })
 
-const spaceMono = Space_Mono({
+const ibmPlexSerif = IBM_Plex_Serif({
   subsets: ["latin"],
-  weight: ["400", "700"],
+  weight: ["400"],
   style: ["normal", "italic"],
-  variable: "--font-mono",
+  variable: "--font-serif",
   display: "swap",
 })
 
@@ -28,7 +28,7 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en" className={`${spaceGrotesk.variable} ${spaceMono.variable}`}>
+    <html lang="en" className={`${inter.variable} ${ibmPlexSerif.variable}`}>
       <body>{children}</body>
     </html>
   )
