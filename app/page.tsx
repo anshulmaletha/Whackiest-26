@@ -115,9 +115,8 @@ export default function Home() {
   const routeInputRef = useRef<(text: string) => Promise<string>>(async () => "")
   const turnIdRef = useRef(0)
   const turnResponseRef = useRef<string | null>(null)
-  const turnSpokenRef = useRef(false)
   const turnPromiseRef = useRef<Promise<string> | null>(null)
-  const convRef = useRef<ReturnType<typeof useConversation> | null>(null)
+  const connectedRef = useRef(false)
 
   const FILLER_WORDS = /^(um+|uh+|hmm*|ah+|oh+|eh+|huh|mhm|like|so|well|right|hey|hi|hello|bye|you know|i see|got it|alright|hm|ha|ho)\.?$/i
 
@@ -143,7 +142,7 @@ export default function Home() {
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [transcript])
 
-  useEffect(() => {}, [])
+  
 
   // ── Keyboard ──
   useEffect(() => {
@@ -504,56 +503,54 @@ export default function Home() {
   routeInputRef.current = routeInput
 
   // ══════════════════════════════════════════════════════════
-  //  VOICE — ElevenLabs = mic only, we always speak ourselves
+  //  VOICE — single speaker architecture
+  //  Connected:    ElevenLabs speaks (tool response is the only output)
+  //  Disconnected: browser TTS speaks
   // ══════════════════════════════════════════════════════════
 
-  function deliver(response: string, turnId: number) {
-    if (!response || turnId !== turnIdRef.current || turnSpokenRef.current) return
-    turnSpokenRef.current = true
-    turnResponseRef.current = response
-    stopSpeaking()
-    convRef.current?.setVolume({ volume: 0 })
+  function showResponse(response: string) {
+    if (!response) return
     addToTranscript("assistant", response)
     announce(response)
     setLastAnswer(response)
-    void speakText(response)
   }
 
-  async function computeAndDeliver(text: string, turnId: number) {
-    const promise = routeInputRef.current(text).catch(() => "")
+  async function precompute(text: string, turnId: number) {
+    const promise = routeInputRef.current(text)
+      .catch(() => "Something went wrong. Try again.")
     turnPromiseRef.current = promise
     const response = await promise
     if (turnId === turnIdRef.current) turnResponseRef.current = response
-    deliver(response, turnId)
+    return response
+  }
+
+  async function toolHandler(paramText?: string): Promise<string> {
+    if (!turnPromiseRef.current && paramText) {
+      void precompute(paramText, turnIdRef.current)
+    }
+    const response = turnPromiseRef.current
+      ? await turnPromiseRef.current
+      : (turnResponseRef.current || "Ready. What would you like to do?")
+    showResponse(response)
+    return response || "Ready. What would you like to do?"
   }
 
   const conversation = useConversation({
     clientTools: {
-      handle_input: async () => {
-        if (turnPromiseRef.current) await turnPromiseRef.current
-        return turnResponseRef.current || ""
-      },
-      search_web: async () => {
-        if (turnPromiseRef.current) await turnPromiseRef.current
-        return turnResponseRef.current || ""
-      },
-      open_result: async () => {
-        if (turnPromiseRef.current) await turnPromiseRef.current
-        return turnResponseRef.current || ""
-      },
-      ask_site: async () => {
-        if (turnPromiseRef.current) await turnPromiseRef.current
-        return turnResponseRef.current || ""
-      },
+      handle_input: async (params: { text?: string }) => toolHandler(params.text),
+      search_web: async (params: { query?: string }) => toolHandler(params.query),
+      open_result: async () => toolHandler(),
+      ask_site: async (params: { question?: string }) => toolHandler(params.question),
     },
     onConnect: () => {
       reconnectCountRef.current = 0
       hasConnectedOnceRef.current = true
-      convRef.current?.setVolume({ volume: 1 })
+      connectedRef.current = true
       setVoiceMode("listening")
       announce("Listening.")
     },
     onDisconnect: () => {
+      connectedRef.current = false
       setVoiceMode("idle")
       if (intentionalEndRef.current) { intentionalEndRef.current = false; return }
       if (reconnectCountRef.current < 3 && hasConnectedOnceRef.current && !sessionStartingRef.current) {
@@ -562,12 +559,8 @@ export default function Home() {
       }
     },
     onModeChange: ({ mode }) => {
-      if (mode === "speaking") {
-        if (!turnSpokenRef.current) stopSpeaking()
-        setVoiceMode("speaking")
-      } else if (mode === "listening") {
-        setVoiceMode("listening")
-      }
+      if (mode === "speaking") setVoiceMode("speaking")
+      else if (mode === "listening") setVoiceMode("listening")
     },
     onMessage: (msg) => {
       try {
@@ -575,25 +568,23 @@ export default function Home() {
           const text = msg.message
           if (isNoise(text)) return
 
-          stopSpeaking()
           turnIdRef.current += 1
           const turnId = turnIdRef.current
-          turnSpokenRef.current = false
           turnResponseRef.current = null
           turnPromiseRef.current = null
 
           addToTranscript("user", text)
-          void computeAndDeliver(text, turnId)
+          void precompute(text, turnId)
         }
-      } catch { /* protect against SDK errors */ }
+      } catch {}
     },
     onError: (err) => console.error("[voice]", err),
-    onUnhandledClientToolCall: () => {},
+    onUnhandledClientToolCall: (p) => console.warn("[voice] unhandled tool:", p),
     onStatusChange: ({ status }) => console.log("[voice]", status),
   })
 
-  convRef.current = conversation
   endSessionRef.current = conversation.endSession
+  connectedRef.current = conversation.status === "connected"
   const isConnected = conversation.status === "connected"
 
   const sessionStartingRef = useRef(false)
@@ -632,19 +623,21 @@ export default function Home() {
     }
   }
 
-  // ── Typed search (from search bar) ──
+  // ── Typed search (from search bar) — browser TTS only when no session ──
   const handleTypedSearch = useCallback(async (q: string) => {
     addToTranscript("user", q)
     const response = await doSearchWithRefine(q)
     addToTranscript("assistant", response)
     announce(response)
+    if (!connectedRef.current) void speakText(response)
   }, [])
 
-  // ── Clicked result (from UI) ──
+  // ── Clicked result (from UI) — browser TTS only when no session ──
   const handleClickResult = useCallback(async (result: SearchResult) => {
     const response = await doOpenResult(result)
     addToTranscript("assistant", response)
     announce(response)
+    if (!connectedRef.current) void speakText(response)
   }, [])
 
   return (
