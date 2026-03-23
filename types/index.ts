@@ -5,6 +5,7 @@ export type SearchResult = {
   description: string
   type: string
   source?: string
+  snippetInfo?: Record<string, string>
 }
 
 export type SearchContext = {

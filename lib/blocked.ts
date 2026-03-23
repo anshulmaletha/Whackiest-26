@@ -29,7 +29,6 @@ const BLOCKED_PHRASES = [
   "please verify",
   "one more step",
   "ray id",
-  "cloudflare",
   "incapsula",
   "sucuri",
   "blocked by",
@@ -37,7 +36,8 @@ const BLOCKED_PHRASES = [
   "browser check",
 ]
 
-const DOMAIN_BLACKLIST = [
+// Only truly unscrape-able social/auth-wall sites — NOT shopping/booking/directories
+const SOCIAL_WALLS = [
   "linkedin.com",
   "facebook.com",
   "instagram.com",
@@ -45,20 +45,6 @@ const DOMAIN_BLACKLIST = [
   "x.com",
   "pinterest.com",
   "tiktok.com",
-  "glassdoor.com",
-  "indeed.com",
-  "zillow.com",
-  "realtor.com",
-  "amazon.com",
-  "walmart.com",
-  "target.com",
-  "bestbuy.com",
-  "ebay.com",
-  "aliexpress.com",
-  "booking.com",
-  "airbnb.com",
-  "expedia.com",
-  "craigslist.org",
 ]
 
 const PREFERRED_DOMAINS = [
@@ -105,10 +91,10 @@ export function isBlockedPage(content: string): boolean {
   return false
 }
 
-export function isBlacklistedDomain(url: string): boolean {
+export function isSocialWall(url: string): boolean {
   try {
     const hostname = new URL(url).hostname.toLowerCase().replace(/^www\./, "")
-    return DOMAIN_BLACKLIST.some((d) => hostname === d || hostname.endsWith(`.${d}`))
+    return SOCIAL_WALLS.some((d) => hostname === d || hostname.endsWith(`.${d}`))
   } catch {
     return false
   }
@@ -124,7 +110,12 @@ export function isPreferredDomain(url: string): boolean {
 }
 
 export function domainScore(url: string): number {
-  if (isBlacklistedDomain(url)) return -50
+  if (isSocialWall(url)) return -30
   if (isPreferredDomain(url)) return 25
   return 0
+}
+
+// Keep old name for backward compatibility but use new logic
+export function isBlacklistedDomain(url: string): boolean {
+  return isSocialWall(url)
 }
