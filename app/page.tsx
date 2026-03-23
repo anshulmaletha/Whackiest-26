@@ -112,14 +112,10 @@ export default function Home() {
   const intentionalEndRef = useRef(false)
   const hasConnectedOnceRef = useRef(false)
 
-  // Routing mutex: prevents double-execution of the same utterance
   const routeInputRef = useRef<(text: string) => Promise<string>>(async () => "")
   const pendingTextRef = useRef<string | null>(null)
   const pendingResponseRef = useRef<string | null>(null)
   const routingInFlightRef = useRef(false)
-  const safetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  // Voice lock — ensures only one voice output at a time
   const toolInFlightRef = useRef(false)
   const agentSpeakingRef = useRef(false)
 
@@ -158,9 +154,7 @@ export default function Home() {
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [transcript])
 
-  useEffect(() => {
-    return () => { if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current) }
-  }, [])
+  useEffect(() => { /* cleanup on unmount */ }, [])
 
   // ── Keyboard ──
   useEffect(() => {
@@ -521,63 +515,46 @@ export default function Home() {
   routeInputRef.current = routeInput
 
   // ══════════════════════════════════════════════════════════
-  //  ELEVENLABS — single tool, mutex-protected routing
+  //  VOICE — simple flow: listen → route → speak
   // ══════════════════════════════════════════════════════════
 
-  function cancelSafety(clearPending = true) {
-    if (clearPending) pendingTextRef.current = null
-    if (safetyTimerRef.current) { clearTimeout(safetyTimerRef.current); safetyTimerRef.current = null }
+  const deliveredRef = useRef(false)
+
+  function speak(text: string) {
+    if (!text) return
+    addToTranscript("assistant", text)
+    announce(text)
+    setLastAnswer(text)
+    speakText(text)
   }
 
-  function deliverPendingResponse() {
-    setTimeout(async () => {
-      if (agentSpeakingRef.current || toolInFlightRef.current) return
-      let response = pendingResponseRef.current
-      if (!response && routingInFlightRef.current) {
-        response = await waitForRouting()
-      }
-      if (response) {
-        pendingResponseRef.current = null
-        routingInFlightRef.current = false
-        addToTranscript("assistant", response)
-        announce(response)
-      }
-    }, 800)
-  }
-
-  // Wait for in-flight proactive routing to finish (max 12s to avoid deadlock)
   async function waitForRouting(): Promise<string | null> {
     if (!routingInFlightRef.current) return pendingResponseRef.current
     return new Promise((resolve) => {
       const start = Date.now()
       const iv = setInterval(() => {
-        if (!routingInFlightRef.current || Date.now() - start > 12000) {
+        if (!routingInFlightRef.current || Date.now() - start > 15000) {
           clearInterval(iv)
           resolve(pendingResponseRef.current)
         }
-      }, 50)
+      }, 100)
     })
   }
 
   async function toolRoute(text: string): Promise<string> {
-    cancelSafety()
     toolInFlightRef.current = true
+    deliveredRef.current = true
 
     try {
-      // If proactive routing already computed the answer, use it (no double execution)
       const cached = await waitForRouting()
       if (cached) {
         pendingResponseRef.current = null
         routingInFlightRef.current = false
-        if (cached) setLastAnswer(cached)
         return cached
       }
-
-      // Proactive route wasn't started or failed — route now (only execution)
       const response = await routeInputRef.current(text)
       pendingResponseRef.current = null
       routingInFlightRef.current = false
-      if (response) setLastAnswer(response)
       return response || "Done."
     } finally {
       toolInFlightRef.current = false
@@ -587,8 +564,6 @@ export default function Home() {
   const conversation = useConversation({
     clientTools: {
       handle_input: async (params: { text: string }) => toolRoute(params.text),
-
-      // Legacy tools — ALL delegate to toolRoute to prevent double execution
       search_web: async (params: { query?: string }) =>
         toolRoute(params.query || pendingTextRef.current || "search"),
       open_result: async (params: { index?: number }) =>
@@ -617,7 +592,6 @@ export default function Home() {
         stopSpeaking()
         agentSpeakingRef.current = true
         setVoiceMode("speaking")
-        cancelSafety(false)
       } else if (mode === "listening") {
         agentSpeakingRef.current = false
         setVoiceMode("listening")
@@ -627,54 +601,30 @@ export default function Home() {
       try {
         if (msg?.source === "user" && msg?.message) {
           const text = msg.message
-
-          if (isNoise(text)) {
-            console.log("[voice] filtered noise:", text)
-            return
-          }
+          if (isNoise(text)) return
 
           addToTranscript("user", text)
+          deliveredRef.current = false
 
-          // Proactive routing: start computing the answer immediately
-          // The tool handler will pick up the result via pendingResponseRef
           pendingTextRef.current = text
           pendingResponseRef.current = null
           routingInFlightRef.current = true
           routeInputRef.current(text).then((response) => {
             pendingResponseRef.current = response
             routingInFlightRef.current = false
-          }).catch(() => { routingInFlightRef.current = false })
 
-          // Safety: if no tool is called within 3s AND agent isn't already speaking
-          if (safetyTimerRef.current) clearTimeout(safetyTimerRef.current)
-          safetyTimerRef.current = setTimeout(async () => {
-            // Don't fire if: agent is speaking, tool is in flight, or text was already handled
-            if (agentSpeakingRef.current || toolInFlightRef.current) return
-            const pending = pendingTextRef.current
-            if (!pending) return
-            pendingTextRef.current = null
-
-            let response = pendingResponseRef.current
-            pendingResponseRef.current = null
-            routingInFlightRef.current = false
-            if (!response) response = await routeInputRef.current(pending)
-
-            if (response) {
-              addToTranscript("assistant", response)
-              announce(response)
-              // Only use browser TTS if ElevenLabs is NOT connected
-              if (conversation.status !== "connected") {
-                speakText(response)
+            // If ElevenLabs tool didn't pick it up within 2s, we speak it ourselves
+            setTimeout(() => {
+              if (!deliveredRef.current && response) {
+                deliveredRef.current = true
+                stopSpeaking()
+                speak(response)
               }
-            }
-          }, 3000)
+            }, 2000)
+          }).catch(() => { routingInFlightRef.current = false })
         }
         if (msg?.source === "ai" && msg?.message) {
-          if (isAgentGarbage(msg.message)) {
-            console.warn("[voice] filtered agent garbage:", msg.message)
-            deliverPendingResponse()
-            return
-          }
+          if (isAgentGarbage(msg.message)) return
           addToTranscript("assistant", msg.message)
           setLastAnswer(msg.message)
         }

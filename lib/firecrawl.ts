@@ -8,14 +8,15 @@ if (!apiKey) {
 const firecrawl = new FirecrawlApp({ apiKey: apiKey ?? "" })
 
 function withTimeout<T>(promise: Promise<T>, fallback: T, label: string, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>
   return Promise.race([
-    promise,
-    new Promise<T>((resolve) =>
-      setTimeout(() => {
+    promise.then((v) => { clearTimeout(timer); return v }),
+    new Promise<T>((resolve) => {
+      timer = setTimeout(() => {
         console.warn(`[firecrawl] ${label} timed out after ${timeoutMs}ms`)
         resolve(fallback)
       }, timeoutMs)
-    ),
+    }),
   ])
 }
 
