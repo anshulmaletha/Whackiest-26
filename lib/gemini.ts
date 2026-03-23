@@ -6,6 +6,17 @@ const ai = apiKey ? new GoogleGenAI({ apiKey }) : null
 const MODEL = "gemini-2.0-flash"
 const TIMEOUT_MS = 10_000
 
+let rateLimitedUntil = 0
+
+function isRateLimited(): boolean {
+  return Date.now() < rateLimitedUntil
+}
+
+function markRateLimited(retryAfterSec = 30) {
+  rateLimitedUntil = Date.now() + retryAfterSec * 1000
+  console.warn(`[gemini] rate-limited, skipping calls for ${retryAfterSec}s`)
+}
+
 function withTimeout<T>(promise: Promise<T>, fallback: T): Promise<T> {
   return Promise.race([
     promise,
@@ -30,6 +41,7 @@ export async function processVoice(
   }
 
   if (!ai || !speech.trim()) return { ...fallback, intent: speech.trim() ? "search" : "ignore" }
+  if (isRateLimited()) return fallback
 
   try {
     const res = await withTimeout(ai.models.generateContent({
@@ -60,8 +72,9 @@ JSON:`,
       category: typeof parsed.category === "string" ? parsed.category : "general",
       extractFields: Array.isArray(parsed.extractFields) ? parsed.extractFields : fallback.extractFields,
     }
-  } catch (e) {
+  } catch (e: unknown) {
     console.error("[gemini] processVoice error:", e)
+    if (e && typeof e === "object" && "status" in e && (e as { status: number }).status === 429) markRateLimited()
     return fallback
   }
 }
@@ -90,7 +103,7 @@ export async function extractSite(
     links: extractLinksBasic(markdown),
   }
 
-  if (!ai || !markdown.trim()) return fallback
+  if (!ai || !markdown.trim() || isRateLimited()) return fallback
 
   const trimmed = markdown.slice(0, 6000)
 
@@ -123,8 +136,9 @@ JSON:`,
       headings: extractHeadingsBasic(markdown),
       links: extractLinksBasic(markdown),
     }
-  } catch (e) {
+  } catch (e: unknown) {
     console.error("[gemini] extractSite error:", e)
+    if (e && typeof e === "object" && "status" in e && (e as { status: number }).status === 429) markRateLimited()
     return fallback
   }
 }
@@ -138,7 +152,7 @@ export async function answerQuestion(
   siteName: string,
   keyInfo: Record<string, string>
 ): Promise<string> {
-  if (!ai) return ""
+  if (!ai || isRateLimited()) return ""
 
   const keyInfoStr = Object.entries(keyInfo)
     .map(([k, v]) => `${k}: ${v}`)
@@ -159,8 +173,9 @@ If in Info→use it. If in Page→use it. Otherwise→"I don't see that on this 
 A:`,
     }), null)
     return res?.text?.trim() || "I don't see that on this page."
-  } catch (e) {
+  } catch (e: unknown) {
     console.error("[gemini] answerQuestion error:", e)
+    if (e && typeof e === "object" && "status" in e && (e as { status: number }).status === 429) markRateLimited()
     return "I don't see that on this page."
   }
 }
@@ -205,7 +220,7 @@ export async function enrichSearchResults(
   results: Array<{ title: string; url: string; markdownExcerpt: string }>,
 ): Promise<Record<string, string>[]> {
   const empty = results.map(() => ({} as Record<string, string>))
-  if (!ai || results.length === 0) return empty
+  if (!ai || results.length === 0 || isRateLimited()) return empty
 
   const ENRICH_TIMEOUT = 8_000
 
@@ -263,8 +278,9 @@ JSON:`,
       }
       return clean
     })
-  } catch (e) {
+  } catch (e: unknown) {
     console.error("[gemini] enrichSearchResults error:", e)
+    if (e && typeof e === "object" && "status" in e && (e as { status: number }).status === 429) markRateLimited()
     return empty
   }
 }

@@ -7,22 +7,22 @@ if (!apiKey) {
 
 const firecrawl = new FirecrawlApp({ apiKey: apiKey ?? "" })
 
-const TIMEOUT_MS = 10_000
-
-function withTimeout<T>(promise: Promise<T>, fallback: T, label: string): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, fallback: T, label: string, timeoutMs: number): Promise<T> {
   return Promise.race([
     promise,
     new Promise<T>((resolve) =>
       setTimeout(() => {
-        console.warn(`[firecrawl] ${label} timed out after ${TIMEOUT_MS}ms`)
+        console.warn(`[firecrawl] ${label} timed out after ${timeoutMs}ms`)
         resolve(fallback)
-      }, TIMEOUT_MS)
+      }, timeoutMs)
     ),
   ])
 }
 
 export async function searchWeb(query: string) {
   const fallback = { success: false as const, data: [] as unknown[] }
+
+  // Phase 1: Try enriched search with markdown (longer timeout)
   const raw = await withTimeout(
     firecrawl.search(query, {
       limit: 5,
@@ -32,15 +32,30 @@ export async function searchWeb(query: string) {
       },
     }),
     null,
-    "search"
+    "enriched-search",
+    18_000
   )
-  if (!raw || typeof raw !== "object") return fallback
-  const r = raw as { success?: boolean; data?: unknown[]; error?: string }
-  if (!r.success || !Array.isArray(r.data)) {
-    console.warn("[firecrawl:search] failed:", r.error ?? "no data")
+
+  if (raw && typeof raw === "object") {
+    const r = raw as { success?: boolean; data?: unknown[]; error?: string }
+    if (r.success && Array.isArray(r.data) && r.data.length > 0) return r
+  }
+
+  // Phase 2: Fast fallback without markdown scraping
+  console.log("[firecrawl] enriched search failed, trying fast search")
+  const fast = await withTimeout(
+    firecrawl.search(query, { limit: 5 }),
+    null,
+    "fast-search",
+    10_000
+  )
+  if (!fast || typeof fast !== "object") return fallback
+  const fr = fast as { success?: boolean; data?: unknown[]; error?: string }
+  if (!fr.success || !Array.isArray(fr.data)) {
+    console.warn("[firecrawl:search] fast search also failed:", fr.error ?? "no data")
     return fallback
   }
-  return r
+  return fr
 }
 
 export async function scrapeUrl(url: string) {
@@ -48,7 +63,8 @@ export async function scrapeUrl(url: string) {
   const raw = await withTimeout(
     firecrawl.scrapeUrl(url, { formats: ["markdown"], onlyMainContent: true }),
     null,
-    "scrape"
+    "scrape",
+    10_000
   )
   if (!raw || typeof raw !== "object") return fallback
   const r = raw as { success?: boolean; markdown?: string; html?: string; error?: string }
