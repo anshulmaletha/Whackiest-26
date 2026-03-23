@@ -207,7 +207,7 @@ export default function Home() {
         const msg = `Found ${data.results.length} results. First: ${top.title}.`
         addToTranscript("assistant", msg)
         announce(msg)
-        speakSystem(`Found ${data.results.length} results. I'll start with the first. ${top.title}. Say open first result, or next result to browse.`)
+        speakSystem(`Found ${data.results.length} results. First is ${top.title}. You can say open this one, try the next one, or the second result.`)
       } else {
         const noMsg = "No results found. Try a different search."
         addToTranscript("assistant", noMsg)
@@ -405,36 +405,6 @@ export default function Home() {
       return true
     }
 
-    if (/^(next result|next)\b/.test(lower)) {
-      toolCalledRef.current = true
-      const r = resultsRef.current
-      if (r.length === 0) {
-        speakAndAnnounce("No results to navigate.", "assistant")
-        return true
-      }
-      const curIdx = r.findIndex((x) => x.id === selectedResultIdRef.current)
-      const nextIdx = Math.min(r.length - 1, curIdx + 1)
-      setFocusedIndex(nextIdx)
-      setSelectedResultId(r[nextIdx].id)
-      speakAndAnnounce(`Result ${nextIdx + 1}: ${r[nextIdx].title}.`, "assistant")
-      return true
-    }
-
-    if (/^(previous result|previous|prev)\b/.test(lower)) {
-      toolCalledRef.current = true
-      const r = resultsRef.current
-      if (r.length === 0) {
-        speakAndAnnounce("No results to navigate.", "assistant")
-        return true
-      }
-      const curIdx = r.findIndex((x) => x.id === selectedResultIdRef.current)
-      const prevIdx = Math.max(0, curIdx - 1)
-      setFocusedIndex(prevIdx)
-      setSelectedResultId(r[prevIdx].id)
-      speakAndAnnounce(`Result ${prevIdx + 1}: ${r[prevIdx].title}.`, "assistant")
-      return true
-    }
-
     if (/^(read (the )?results|list results|what are the results)\b/.test(lower)) {
       toolCalledRef.current = true
       const r = resultsRef.current
@@ -489,20 +459,124 @@ export default function Home() {
       return true
     }
 
-    const openMatch = lower.match(/^open (the )?(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th|result ?\d+|number ?\d+)\b/)
-    if (openMatch) {
+    // ── Natural-language result navigation parser ──
+    const nav = parseResultIntent(lower)
+    if (nav && resultsRef.current.length > 0) {
       toolCalledRef.current = true
       const r = resultsRef.current
-      if (r.length === 0) { speakAndAnnounce("No results to open.", "assistant"); return true }
-      const word = openMatch[2]
-      const idx = { first: 0, "1st": 0, second: 1, "2nd": 1, third: 2, "3rd": 2, fourth: 3, "4th": 3, fifth: 4, "5th": 4 }[word]
-        ?? (parseInt(word.replace(/\D/g, "")) - 1)
-      const safeIdx = Math.max(0, Math.min(r.length - 1, typeof idx === "number" && !isNaN(idx) ? idx : 0))
-      handleOpenResultRef.current(r[safeIdx])
-      return true
+      const curIdx = r.findIndex((x) => x.id === selectedResultIdRef.current)
+
+      if (nav.action === "open") {
+        const idx = resolveTargetIndex(nav.target, curIdx, r.length)
+        if (idx >= 0 && idx < r.length) {
+          speakAndAnnounce(`Opening result ${idx + 1}.`, "assistant")
+          handleOpenResultRef.current(r[idx])
+        } else {
+          speakAndAnnounce("No results to open.", "assistant")
+        }
+        return true
+      }
+
+      if (nav.action === "select") {
+        const idx = resolveTargetIndex(nav.target, curIdx, r.length)
+        if (idx >= 0 && idx < r.length) {
+          setFocusedIndex(idx)
+          setSelectedResultId(r[idx].id)
+          speakAndAnnounce(`Result ${idx + 1}: ${r[idx].title}. Say open this one to go there.`, "assistant")
+        }
+        return true
+      }
     }
 
     return false
+  }
+
+  // ── Natural-language intent parser for result navigation ──
+
+  type ResultNavIntent = {
+    action: "open" | "select"
+    target: "first" | "second" | "third" | "fourth" | "fifth" | "next" | "previous" | "current" | "last" | number
+  }
+
+  function parseResultIntent(text: string): ResultNavIntent | null {
+    const ORDINAL_MAP: Record<string, number> = {
+      first: 0, "1st": 0, one: 0, "1": 0,
+      second: 1, "2nd": 1, two: 1, "2": 1,
+      third: 2, "3rd": 2, three: 2, "3": 2,
+      fourth: 3, "4th": 3, four: 3, "4": 3,
+      fifth: 4, "5th": 4, five: 4, "5": 4,
+    }
+    const ORDINAL_NAMES: Record<number, ResultNavIntent["target"]> = {
+      0: "first", 1: "second", 2: "third", 3: "fourth", 4: "fifth",
+    }
+
+    const hasOpenVerb = /\b(open|go to|try|choose|select|switch to|show|take|visit|click|pick|check out|let'?s? (try|go|see|open))\b/.test(text)
+    const hasNegation = /\b(not? (this|that)|don'?t|no,? )\b/.test(text)
+    const hasAnother = /\b(another|different|other|else)\b/.test(text)
+
+    // Detect ordinal
+    let ordinalIdx: number | null = null
+    for (const [word, idx] of Object.entries(ORDINAL_MAP)) {
+      const re = new RegExp(`\\b(${word})(\\s+(one|result|option|choice|item|website|site|link))?\\b`)
+      if (re.test(text)) {
+        ordinalIdx = idx
+        break
+      }
+    }
+    // "number X" / "option X" / "result X"
+    const numMatch = text.match(/\b(number|option|result|#)\s*(\d)\b/)
+    if (numMatch) ordinalIdx = parseInt(numMatch[2]) - 1
+
+    // Detect next/previous
+    const isNext = /\b(next|move on|skip|forward)\b/.test(text) || (hasAnother && ordinalIdx === null)
+    const isPrevious = /\b(previous|prev|before|back one|go back one|preceding)\b/.test(text)
+    const isCurrent = /\b(this one|this result|that one|current|same)\b/.test(text) && !hasNegation
+    const isLast = /\b(last|final|bottom)\b/.test(text)
+
+    // "not this one" / "no, the other one" → means next
+    const negatesCurrent = hasNegation && (isCurrent || /\b(one|this|that)\b/.test(text))
+
+    let target: ResultNavIntent["target"] | null = null
+
+    if (ordinalIdx !== null && ordinalIdx >= 0 && ordinalIdx <= 4) {
+      target = ORDINAL_NAMES[ordinalIdx] ?? ordinalIdx
+    } else if (isNext || negatesCurrent) {
+      target = "next"
+    } else if (isPrevious) {
+      target = "previous"
+    } else if (isCurrent && !hasNegation) {
+      target = "current"
+    } else if (isLast) {
+      target = "last"
+    }
+
+    if (target === null) return null
+
+    const action: ResultNavIntent["action"] = (hasOpenVerb || target === "current") ? "open" : "select"
+
+    // "the second one" without a verb → still open if results are visible
+    const isBareMention = !hasOpenVerb && ordinalIdx !== null
+    if (isBareMention && resultsRef.current.length > 0) {
+      return { action: "open", target }
+    }
+
+    return { action, target }
+  }
+
+  function resolveTargetIndex(target: ResultNavIntent["target"], curIdx: number, length: number): number {
+    if (typeof target === "number") return Math.max(0, Math.min(length - 1, target))
+    switch (target) {
+      case "first": return 0
+      case "second": return Math.min(1, length - 1)
+      case "third": return Math.min(2, length - 1)
+      case "fourth": return Math.min(3, length - 1)
+      case "fifth": return Math.min(4, length - 1)
+      case "next": return Math.min(curIdx + 1, length - 1)
+      case "previous": return Math.max(curIdx - 1, 0)
+      case "current": return Math.max(curIdx, 0)
+      case "last": return length - 1
+      default: return 0
+    }
   }
 
   // ── Voice fallback: fires if agent doesn't handle speech within 1.5s ──
