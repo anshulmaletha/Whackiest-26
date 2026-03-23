@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react"
 import type { TranscriptItem } from "@/types"
 
-type VisualState = "idle" | "connecting" | "listening" | "speaking" | "expanded"
+type VisualState = "idle" | "listening" | "speaking" | "expanded"
 
 interface Props {
   transcript: TranscriptItem[]
@@ -27,7 +27,6 @@ export default function DynamicIsland({
   const prevAnswerRef = useRef<string | null>(null)
   const collapseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Derive visual state
   const visualState: VisualState = !isConnected
     ? "idle"
     : isExpanded
@@ -36,7 +35,6 @@ export default function DynamicIsland({
     ? "speaking"
     : "listening"
 
-  // Flash answer when a new one arrives
   useEffect(() => {
     if (lastAnswer && lastAnswer !== prevAnswerRef.current) {
       prevAnswerRef.current = lastAnswer
@@ -46,22 +44,17 @@ export default function DynamicIsland({
       collapseTimerRef.current = setTimeout(() => {
         setIsExpanded(false)
         setFlashAnswer(false)
-      }, 4000)
+      }, 5000)
     }
   }, [lastAnswer])
 
-  function handleClick() {
+  function handlePillClick() {
     if (!isConnected) {
       onMicClick()
       return
     }
-    if (isExpanded) {
-      setIsExpanded(false)
-      if (collapseTimerRef.current) clearTimeout(collapseTimerRef.current)
-    } else {
-      setIsExpanded(true)
-      if (collapseTimerRef.current) clearTimeout(collapseTimerRef.current)
-    }
+    setIsExpanded(!isExpanded)
+    if (collapseTimerRef.current) clearTimeout(collapseTimerRef.current)
   }
 
   function handleEndClick(e: React.MouseEvent) {
@@ -70,101 +63,129 @@ export default function DynamicIsland({
     setIsExpanded(false)
   }
 
-  const recentTranscript = transcript.slice(-4)
+  const recentTranscript = transcript.slice(-5)
 
   return (
-    <div
-      className={`di di--${visualState}`}
-      onClick={handleClick}
-      role="button"
-      aria-label={isConnected ? "Voice assistant active" : "Start voice assistant"}
-    >
-      {/* ── Idle ────────────────────────────────────────────────────── */}
-      {visualState === "idle" && (
-        <div className="di-inner di-inner--idle">
-          <MicIcon />
-          <span className="di-label">Navia</span>
-        </div>
-      )}
+    <div className={`di di--${visualState}`}>
+      {/* Glow ring behind the island */}
+      <div className="di-glow" />
 
-      {/* ── Listening ───────────────────────────────────────────────── */}
-      {visualState === "listening" && (
-        <div className="di-inner di-inner--mini">
-          <div className="di-bars di-bars--green">
-            {[0,1,2,3,4].map(i => (
-              <span key={i} className="di-bar" style={{ animationDelay: `${i * 0.12}s` }} />
-            ))}
+      {/* Main content area */}
+      <div className="di-content" onClick={handlePillClick}>
+        {/* ── IDLE ──────────────────────────────────────────────── */}
+        {visualState === "idle" && (
+          <div className="di-row di-row--center">
+            <div className="di-mic-ring">
+              <MicIcon />
+            </div>
+            <span className="di-cta">Tap to start Navia</span>
           </div>
-          <span className="di-label">Listening</span>
-          <button className="di-end" onClick={handleEndClick} aria-label="End session">✕</button>
-        </div>
-      )}
+        )}
 
-      {/* ── Speaking ────────────────────────────────────────────────── */}
-      {visualState === "speaking" && (
-        <div className="di-inner di-inner--mini">
-          <div className="di-bars di-bars--white">
-            {[0,1,2,3,4,5,6].map(i => (
-              <span key={i} className="di-bar di-bar--wave" style={{ animationDelay: `${i * 0.08}s` }} />
-            ))}
+        {/* ── LISTENING ─────────────────────────────────────────── */}
+        {visualState === "listening" && (
+          <div className="di-row di-row--between">
+            <div className="di-left">
+              <div className="di-pulse-ring" />
+              <WaveformBars count={5} variant="green" />
+              <span className="di-state-label">Listening…</span>
+            </div>
+            <button className="di-close" onClick={handleEndClick} aria-label="End session">
+              <XIcon />
+            </button>
           </div>
-          <span className="di-label">Speaking</span>
-          <button className="di-end" onClick={handleEndClick} aria-label="End session">✕</button>
-        </div>
-      )}
+        )}
 
-      {/* ── Expanded ────────────────────────────────────────────────── */}
-      {visualState === "expanded" && (
-        <div className="di-inner di-inner--expanded">
-          <div className="di-expanded-header">
-            <div className="di-expanded-status">
-              {isSpeaking ? (
-                <div className="di-bars di-bars--white di-bars--sm">
-                  {[0,1,2,3,4].map(i => (
-                    <span key={i} className="di-bar di-bar--wave" style={{ animationDelay: `${i * 0.08}s` }} />
-                  ))}
+        {/* ── SPEAKING ──────────────────────────────────────────── */}
+        {visualState === "speaking" && (
+          <div className="di-row di-row--between">
+            <div className="di-left">
+              <WaveformBars count={9} variant="accent" />
+              <span className="di-state-label di-state-label--accent">Navia is speaking</span>
+            </div>
+            <button className="di-close" onClick={handleEndClick} aria-label="End session">
+              <XIcon />
+            </button>
+          </div>
+        )}
+
+        {/* ── EXPANDED ──────────────────────────────────────────── */}
+        {visualState === "expanded" && (
+          <div className="di-expanded">
+            <div className="di-expanded__top">
+              <div className="di-left">
+                {isSpeaking ? (
+                  <WaveformBars count={7} variant="accent" />
+                ) : (
+                  <>
+                    <div className="di-pulse-ring di-pulse-ring--sm" />
+                    <WaveformBars count={4} variant="green" />
+                  </>
+                )}
+                <span className="di-state-label">
+                  {isSpeaking ? "Speaking" : "Listening"}
+                </span>
+              </div>
+              <button className="di-close" onClick={handleEndClick} aria-label="End">
+                <XIcon />
+              </button>
+            </div>
+
+            <div className="di-expanded__body">
+              {flashAnswer && lastAnswer ? (
+                <div className="di-flash">
+                  <div className="di-flash__avatar">N</div>
+                  <p className="di-flash__text">{lastAnswer}</p>
                 </div>
+              ) : recentTranscript.length > 0 ? (
+                <ul className="di-messages">
+                  {recentTranscript.map((item, i) => (
+                    <li key={i} className={`di-bubble di-bubble--${item.role}`}>
+                      {item.role === "assistant" && <div className="di-bubble__avatar">N</div>}
+                      <span className="di-bubble__text">{item.text}</span>
+                    </li>
+                  ))}
+                </ul>
               ) : (
-                <div className="di-bars di-bars--green di-bars--sm">
-                  {[0,1,2,3].map(i => (
-                    <span key={i} className="di-bar" style={{ animationDelay: `${i * 0.12}s` }} />
-                  ))}
-                </div>
+                <p className="di-empty">Say something to search the web…</p>
               )}
-              <span className="di-status-text">{isSpeaking ? "Speaking" : "Listening"}</span>
             </div>
-            <button className="di-end di-end--sm" onClick={handleEndClick} aria-label="End session">✕</button>
           </div>
+        )}
+      </div>
+    </div>
+  )
+}
 
-          {flashAnswer && lastAnswer ? (
-            <div className="di-answer">
-              <span className="di-answer__label">Navia</span>
-              <p className="di-answer__text">{lastAnswer}</p>
-            </div>
-          ) : recentTranscript.length > 0 ? (
-            <ul className="di-transcript">
-              {recentTranscript.map((item, i) => (
-                <li key={i} className={`di-msg di-msg--${item.role}`}>
-                  <span className="di-msg__role">{item.role === "user" ? "You" : "Navia"}</span>
-                  <span className="di-msg__text">{item.text}</span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="di-hint">Say something to get started…</p>
-          )}
-        </div>
-      )}
+function WaveformBars({ count, variant }: { count: number; variant: "green" | "accent" }) {
+  return (
+    <div className={`di-wave di-wave--${variant}`}>
+      {Array.from({ length: count }, (_, i) => (
+        <span
+          key={i}
+          className="di-wave__bar"
+          style={{ animationDelay: `${i * 0.09}s` }}
+        />
+      ))}
     </div>
   )
 }
 
 function MicIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
-      <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-      <line x1="12" y1="19" x2="12" y2="23"/>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+      <line x1="12" y1="19" x2="12" y2="22" />
+    </svg>
+  )
+}
+
+function XIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
     </svg>
   )
 }
