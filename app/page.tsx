@@ -6,7 +6,7 @@ import type { SearchResult, SiteData, TranscriptItem } from "@/types"
 import SearchBar from "@/components/SearchBar"
 import ResultsList from "@/components/ResultsList"
 import SitePanel from "@/components/SitePanel"
-import TranscriptPanel from "@/components/TranscriptPanel"
+import DynamicIsland from "@/components/DynamicIsland"
 
 const AGENT_ID = process.env.NEXT_PUBLIC_ELEVENLABS_AGENT_ID ?? ""
 
@@ -19,7 +19,6 @@ export default function Home() {
   const [transcript, setTranscript] = useState<TranscriptItem[]>([])
   const [isLoadingResults, setIsLoadingResults] = useState(false)
   const [isLoadingSite, setIsLoadingSite] = useState(false)
-  const [transcriptOpen, setTranscriptOpen] = useState(false)
   const [lastAnswer, setLastAnswer] = useState<string | null>(null)
 
   // Keep a ref to current site data so clientTools callbacks always read fresh state
@@ -66,7 +65,6 @@ export default function Home() {
     setSelectedResult(result)
     setIsLoadingSite(true)
     setCurrentSite(null)
-    setTranscriptOpen(true)
     addToTranscript("user", `Opening: ${result.title}`)
 
     try {
@@ -112,7 +110,6 @@ export default function Home() {
         const answer = data.answer ?? "I couldn't find an answer."
         addToTranscript("assistant", answer)
         setLastAnswer(answer)
-        setTranscriptOpen(true)
       } catch {
         addToTranscript("assistant", "Failed to answer the question.")
       }
@@ -196,17 +193,15 @@ export default function Home() {
   async function toggleVoice() {
     if (isConnected) {
       await conversation.endSession()
-      setTranscriptOpen(false)
     } else {
-      try {
-        await navigator.mediaDevices.getUserMedia({ audio: true })
-        await conversation.startSession({ agentId: AGENT_ID, connectionType: "webrtc" })
-        setTranscriptOpen(true)
-        addToTranscript("assistant", "Hello! I'm Navia. How can I help you today?")
-      } catch (e) {
-        console.error("Failed to start voice session:", e)
-        addToTranscript("assistant", "Microphone access is required for voice mode.")
-      }
+    try {
+      await navigator.mediaDevices.getUserMedia({ audio: true })
+      await conversation.startSession({ agentId: AGENT_ID, connectionType: "webrtc" })
+      addToTranscript("assistant", "Hello! I'm Navia. How can I help you today?")
+    } catch (e) {
+      console.error("Failed to start voice session:", e)
+      addToTranscript("assistant", "Microphone access is required for voice mode.")
+    }
     }
   }
 
@@ -218,12 +213,7 @@ export default function Home() {
       <header className="nav">
         <span className="nav__logo">NAVIA</span>
         <span className="nav__tagline">Voice-first web access</span>
-        {isConnected && (
-          <span className="nav__badge">
-            <span className="status-dot status-dot--listening" />
-            Connected
-          </span>
-        )}
+        <span className="nav__spacer" />
       </header>
 
       {/* Main layout */}
@@ -256,14 +246,14 @@ export default function Home() {
         </section>
       </main>
 
-      {/* Floating transcript panel */}
-      <TranscriptPanel
+      {/* Dynamic Island voice assistant */}
+      <DynamicIsland
         transcript={transcript}
         isListening={isListening}
         isSpeaking={conversation.isSpeaking}
-        isOpen={transcriptOpen}
-        onToggle={() => setTranscriptOpen((v) => !v)}
+        isConnected={isConnected}
         lastAnswer={lastAnswer}
+        onMicClick={toggleVoice}
       />
     </div>
   )
