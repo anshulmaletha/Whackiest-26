@@ -117,6 +117,7 @@ export default function Home() {
   const turnResponseRef = useRef<string | null>(null)
   const turnSpokenRef = useRef(false)
   const turnPromiseRef = useRef<Promise<string> | null>(null)
+  const convRef = useRef<ReturnType<typeof useConversation> | null>(null)
 
   const FILLER_WORDS = /^(um+|uh+|hmm*|ah+|oh+|eh+|huh|mhm|like|so|well|right|hey|hi|hello|bye|you know|i see|got it|alright|hm|ha|ho)\.?$/i
 
@@ -511,6 +512,7 @@ export default function Home() {
     turnSpokenRef.current = true
     turnResponseRef.current = response
     stopSpeaking()
+    convRef.current?.setVolume({ volume: 0 })
     addToTranscript("assistant", response)
     announce(response)
     setLastAnswer(response)
@@ -547,6 +549,7 @@ export default function Home() {
     onConnect: () => {
       reconnectCountRef.current = 0
       hasConnectedOnceRef.current = true
+      convRef.current?.setVolume({ volume: 1 })
       setVoiceMode("listening")
       announce("Listening.")
     },
@@ -560,7 +563,7 @@ export default function Home() {
     },
     onModeChange: ({ mode }) => {
       if (mode === "speaking") {
-        stopSpeaking() // kill browser TTS so agent voice doesn't overlap
+        if (!turnSpokenRef.current) stopSpeaking()
         setVoiceMode("speaking")
       } else if (mode === "listening") {
         setVoiceMode("listening")
@@ -572,6 +575,7 @@ export default function Home() {
           const text = msg.message
           if (isNoise(text)) return
 
+          stopSpeaking()
           turnIdRef.current += 1
           const turnId = turnIdRef.current
           turnSpokenRef.current = false
@@ -588,6 +592,7 @@ export default function Home() {
     onStatusChange: ({ status }) => console.log("[voice]", status),
   })
 
+  convRef.current = conversation
   endSessionRef.current = conversation.endSession
   const isConnected = conversation.status === "connected"
 
