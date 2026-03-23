@@ -114,6 +114,8 @@ export default function Home() {
 
   const routeInputRef = useRef<(text: string) => Promise<string>>(async () => "")
   const pendingTextRef = useRef<string | null>(null)
+  const pendingRoutePromiseRef = useRef<Promise<string> | null>(null)
+  const pendingResponseRef = useRef<string | null>(null)
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const turnIdRef = useRef(0)
   const toolRequestedRef = useRef(false)
@@ -138,6 +140,9 @@ export default function Home() {
     const t = text.trim().toLowerCase()
     if (t.length < 3) return true
     if (t === "not found" || t === "not found.") return true
+    if (t.includes("wasn't able to get a response")) return true
+    if (t.includes("was not able to get a response")) return true
+    if (t.includes("could you please repeat your request")) return true
     if (/^(please speak|say something|are you still there|still listening|are you there|can you hear me)\.?$/.test(t)) return true
     return false
   }
@@ -540,11 +545,32 @@ export default function Home() {
     void speakText(text)
   }
 
+  async function getPendingResponse(turnId: number, text: string): Promise<string> {
+    if (turnId !== turnIdRef.current) return ""
+    if (pendingResponseRef.current !== null) return pendingResponseRef.current
+    if (pendingRoutePromiseRef.current) return pendingRoutePromiseRef.current
+
+    const promise = routeInputRef.current(text)
+      .then((response) => {
+        if (turnId === turnIdRef.current) pendingResponseRef.current = response
+        return response
+      })
+      .catch(() => "")
+
+    pendingRoutePromiseRef.current = promise
+    return promise
+  }
+
   async function runFallback(turnId: number, text: string) {
     if (turnId !== turnIdRef.current) return
-    if (toolRequestedRef.current || toolInFlightRef.current || agentSpeakingRef.current) return
+    if (toolRequestedRef.current || toolInFlightRef.current) return
+    if (fallbackDeliveredTurnRef.current === turnId) return
+    if (agentSpeakingRef.current) {
+      setTimeout(() => { void runFallback(turnId, text) }, 600)
+      return
+    }
 
-    const response = await routeInputRef.current(text)
+    const response = await getPendingResponse(turnId, text)
     if (!response) return
 
     fallbackDeliveredTurnRef.current = turnId
@@ -563,7 +589,7 @@ export default function Home() {
       // A guarded fallback already answered this exact turn locally.
       if (fallbackDeliveredTurnRef.current === turnIdRef.current) return ""
 
-      const response = await routeInputRef.current(input)
+      const response = await getPendingResponse(turnIdRef.current, input)
       return response || ""
     } finally {
       toolInFlightRef.current = false
@@ -589,6 +615,8 @@ export default function Home() {
     onDisconnect: () => {
       clearFallbackTimer()
       pendingTextRef.current = null
+      pendingResponseRef.current = null
+      pendingRoutePromiseRef.current = null
       toolRequestedRef.current = false
       setVoiceMode("idle")
       agentSpeakingRef.current = false
@@ -622,11 +650,13 @@ export default function Home() {
           if (isNoise(text)) return
 
           addToTranscript("user", text)
-          pendingTextRef.current = text
-          toolRequestedRef.current = false
-          fallbackDeliveredTurnRef.current = null
           turnIdRef.current += 1
           const turnId = turnIdRef.current
+          pendingTextRef.current = text
+          pendingResponseRef.current = null
+          pendingRoutePromiseRef.current = getPendingResponse(turnId, text)
+          toolRequestedRef.current = false
+          fallbackDeliveredTurnRef.current = null
 
           clearFallbackTimer()
           fallbackTimerRef.current = setTimeout(() => {
@@ -634,7 +664,15 @@ export default function Home() {
           }, 2500)
         }
         if (msg?.source === "ai" && msg?.message) {
-          if (isAgentGarbage(msg.message)) return
+          if (isAgentGarbage(msg.message)) {
+            if (!toolRequestedRef.current && pendingTextRef.current) {
+              clearFallbackTimer()
+              setTimeout(() => {
+                void runFallback(turnIdRef.current, pendingTextRef.current ?? "")
+              }, 250)
+            }
+            return
+          }
           addToTranscript("assistant", msg.message)
           setLastAnswer(msg.message)
         }
