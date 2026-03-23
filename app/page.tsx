@@ -524,25 +524,55 @@ export default function Home() {
     return response
   }
 
-  async function toolHandler(paramText?: string): Promise<string> {
+  const TOOL_TIMEOUT_MS = 7_000
+
+  async function toolHandler(toolName: string, paramText?: string): Promise<string> {
+    console.log(`[navia] TOOL CALLED: ${toolName}, param: "${paramText}", hasPending: ${!!turnPromiseRef.current}`)
     if (!turnPromiseRef.current && paramText) {
       void precompute(paramText, turnIdRef.current)
     }
-    const response = turnPromiseRef.current
-      ? await turnPromiseRef.current
-      : (turnResponseRef.current || "Ready. What would you like to do?")
-    showResponse(response)
-    return response || "Ready. What would you like to do?"
+
+    const pending = turnPromiseRef.current
+    if (!pending) {
+      const cached = turnResponseRef.current || "Ready. What would you like to do?"
+      showResponse(cached)
+      return cached
+    }
+
+    let timedOut = false
+    const result = await Promise.race([
+      pending,
+      new Promise<null>((resolve) =>
+        setTimeout(() => { timedOut = true; resolve(null) }, TOOL_TIMEOUT_MS)
+      ),
+    ])
+
+    if (result && !timedOut) {
+      console.log(`[navia] TOOL RETURNING (in time): "${result.slice(0, 80)}..."`)
+      showResponse(result)
+      return result
+    }
+
+    console.warn(`[navia] TOOL TIMED OUT after ${TOOL_TIMEOUT_MS}ms, returning ack`)
+    pending.then((response) => {
+      if (!response) return
+      showResponse(response)
+      if (!connectedRef.current) return
+      console.log(`[navia] emergency TTS: "${response.slice(0, 80)}..."`)
+      void speakText(response)
+    })
+    return "Working on it. One moment."
   }
 
   const conversation = useConversation({
     clientTools: {
-      handle_input: async (params: { text?: string }) => toolHandler(params.text),
-      search_web: async (params: { query?: string }) => toolHandler(params.query),
-      open_result: async () => toolHandler(),
-      ask_site: async (params: { question?: string }) => toolHandler(params.question),
+      handle_input: async (params: { text?: string }) => toolHandler("handle_input", params.text),
+      search_web: async (params: { query?: string }) => toolHandler("search_web", params.query),
+      open_result: async () => toolHandler("open_result"),
+      ask_site: async (params: { question?: string }) => toolHandler("ask_site", params.question),
     },
     onConnect: () => {
+      console.log("[navia] CONNECTED")
       reconnectCountRef.current = 0
       hasConnectedOnceRef.current = true
       connectedRef.current = true
@@ -550,23 +580,27 @@ export default function Home() {
       announce("Listening.")
     },
     onDisconnect: () => {
+      console.log("[navia] DISCONNECTED")
       connectedRef.current = false
       setVoiceMode("idle")
       if (intentionalEndRef.current) { intentionalEndRef.current = false; return }
       if (reconnectCountRef.current < 3 && hasConnectedOnceRef.current && !sessionStartingRef.current) {
         reconnectCountRef.current++
+        console.log(`[navia] auto-reconnect #${reconnectCountRef.current}`)
         setTimeout(() => startSession(), 1500)
       }
     },
     onModeChange: ({ mode }) => {
+      console.log(`[navia] MODE: ${mode}`)
       if (mode === "speaking") setVoiceMode("speaking")
       else if (mode === "listening") setVoiceMode("listening")
     },
     onMessage: (msg) => {
       try {
+        console.log(`[navia] MESSAGE: source=${msg?.source}, text="${msg?.message?.slice(0, 80)}"`)
         if (msg?.source === "user" && msg?.message) {
           const text = msg.message
-          if (isNoise(text)) return
+          if (isNoise(text)) { console.log("[navia] filtered as noise"); return }
 
           turnIdRef.current += 1
           const turnId = turnIdRef.current
@@ -574,13 +608,17 @@ export default function Home() {
           turnPromiseRef.current = null
 
           addToTranscript("user", text)
+          console.log(`[navia] precomputing turn ${turnId}: "${text}"`)
           void precompute(text, turnId)
         }
-      } catch {}
+        if (msg?.source === "ai" && msg?.message) {
+          console.log(`[navia] AGENT SAID: "${msg.message}"`)
+        }
+      } catch (e) { console.error("[navia] onMessage error:", e) }
     },
-    onError: (err) => console.error("[voice]", err),
-    onUnhandledClientToolCall: (p) => console.warn("[voice] unhandled tool:", p),
-    onStatusChange: ({ status }) => console.log("[voice]", status),
+    onError: (err) => console.error("[navia] ERROR:", err),
+    onUnhandledClientToolCall: (p) => console.warn("[navia] UNHANDLED TOOL:", JSON.stringify(p)),
+    onStatusChange: ({ status }) => console.log("[navia] STATUS:", status),
   })
 
   endSessionRef.current = conversation.endSession

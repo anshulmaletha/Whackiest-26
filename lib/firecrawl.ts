@@ -23,7 +23,7 @@ function withTimeout<T>(promise: Promise<T>, fallback: T, label: string, timeout
 export async function searchWeb(query: string) {
   const fallback = { success: false as const, data: [] as unknown[] }
 
-  // Phase 1: Try enriched search with markdown (longer timeout)
+  // Phase 1: Try enriched search with markdown
   const raw = await withTimeout(
     firecrawl.search(query, {
       limit: 5,
@@ -34,7 +34,7 @@ export async function searchWeb(query: string) {
     }),
     null,
     "enriched-search",
-    18_000
+    8_000
   )
 
   if (raw && typeof raw === "object") {
@@ -48,7 +48,7 @@ export async function searchWeb(query: string) {
     firecrawl.search(query, { limit: 5 }),
     null,
     "fast-search",
-    10_000
+    5_000
   )
   if (!fast || typeof fast !== "object") return fallback
   const fr = fast as { success?: boolean; data?: unknown[]; error?: string }
