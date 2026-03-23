@@ -142,7 +142,10 @@ export default function Home() {
     if (t === "not found" || t === "not found.") return true
     if (t.includes("wasn't able to get a response")) return true
     if (t.includes("was not able to get a response")) return true
+    if (t.includes("wasn't able to get that information")) return true
+    if (t.includes("was not able to get that information")) return true
     if (t.includes("could you please repeat your request")) return true
+    if (t.includes("would you like me to try again")) return true
     if (/^(please speak|say something|are you still there|still listening|are you there|can you hear me)\.?$/.test(t)) return true
     return false
   }
@@ -561,12 +564,12 @@ export default function Home() {
     return promise
   }
 
-  async function runFallback(turnId: number, text: string) {
+  async function runFallback(turnId: number, text: string, force = false) {
     if (turnId !== turnIdRef.current) return
-    if (toolRequestedRef.current || toolInFlightRef.current) return
+    if (!force && (toolRequestedRef.current || toolInFlightRef.current)) return
     if (fallbackDeliveredTurnRef.current === turnId) return
     if (agentSpeakingRef.current) {
-      setTimeout(() => { void runFallback(turnId, text) }, 600)
+      setTimeout(() => { void runFallback(turnId, text, force) }, 600)
       return
     }
 
@@ -665,10 +668,10 @@ export default function Home() {
         }
         if (msg?.source === "ai" && msg?.message) {
           if (isAgentGarbage(msg.message)) {
-            if (!toolRequestedRef.current && pendingTextRef.current) {
+            if (pendingTextRef.current) {
               clearFallbackTimer()
               setTimeout(() => {
-                void runFallback(turnIdRef.current, pendingTextRef.current ?? "")
+                void runFallback(turnIdRef.current, pendingTextRef.current ?? "", true)
               }, 250)
             }
             return
