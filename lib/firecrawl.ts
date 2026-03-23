@@ -15,6 +15,7 @@ export async function searchWeb(query: string) {
 export async function scrapeUrl(url: string) {
   const response = await firecrawl.scrapeUrl(url, {
     formats: ["markdown", "html"],
+    onlyMainContent: true,
   })
   return response
 }

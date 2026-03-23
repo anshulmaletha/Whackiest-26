@@ -106,21 +106,35 @@ function extractSiteName(markdown: string, url: string): string {
   }
 }
 
+const NOISE_REGEX =
+  /cookie|consent|privacy policy|gdpr|accept|we use cookies|by continuing|clicking agree|terms of use|subscribe to our|newsletter|sign up for|javascript|enable js/i
+
 function buildSummary(markdown: string): string {
-  // Take first meaningful paragraph (skip headings and short lines)
   const lines = markdown.split("\n")
   for (const line of lines) {
     const trimmed = line.replace(/^#+\s*/, "").trim()
-    if (trimmed.length > 60 && !trimmed.startsWith("!") && !trimmed.startsWith("[")) {
+    if (
+      trimmed.length > 60 &&
+      !NOISE_REGEX.test(trimmed) &&
+      !trimmed.startsWith("!") &&
+      !trimmed.startsWith("[")
+    ) {
       return trimmed.slice(0, 300)
     }
   }
-  return markdown.slice(0, 300).trim()
+  // All lines were noise — return best non-noise paragraph from first 2000 chars
+  const cleaned = markdown
+    .split("\n")
+    .filter((l) => !NOISE_REGEX.test(l) && l.trim().length > 20)
+    .join(" ")
+  return cleaned.slice(0, 300).trim() || "No description available."
 }
 
 function buildExtractedText(markdown: string): string {
-  // Strip markdown syntax for plain-text keyword matching
   return markdown
+    .split("\n")
+    .filter((l) => !NOISE_REGEX.test(l))
+    .join("\n")
     .replace(/!\[.*?\]\(.*?\)/g, "")
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
     .replace(/#{1,6}\s/g, "")
