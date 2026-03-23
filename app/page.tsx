@@ -114,8 +114,10 @@ export default function Home() {
 
   const routeInputRef = useRef<(text: string) => Promise<string>>(async () => "")
   const pendingTextRef = useRef<string | null>(null)
-  const pendingResponseRef = useRef<string | null>(null)
-  const routingInFlightRef = useRef(false)
+  const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const turnIdRef = useRef(0)
+  const toolRequestedRef = useRef(false)
+  const fallbackDeliveredTurnRef = useRef<number | null>(null)
   const toolInFlightRef = useRef(false)
   const agentSpeakingRef = useRef(false)
 
@@ -154,7 +156,11 @@ export default function Home() {
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [transcript])
 
-  useEffect(() => { /* cleanup on unmount */ }, [])
+  useEffect(() => {
+    return () => {
+      if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current)
+    }
+  }, [])
 
   // ── Keyboard ──
   useEffect(() => {
@@ -515,47 +521,50 @@ export default function Home() {
   routeInputRef.current = routeInput
 
   // ══════════════════════════════════════════════════════════
-  //  VOICE — simple flow: listen → route → speak
+  //  VOICE — agent-driven tool call, guarded local fallback
   // ══════════════════════════════════════════════════════════
 
-  const deliveredRef = useRef(false)
+  function clearFallbackTimer() {
+    if (fallbackTimerRef.current) {
+      clearTimeout(fallbackTimerRef.current)
+      fallbackTimerRef.current = null
+    }
+  }
 
-  function speak(text: string) {
+  function speakFallback(text: string) {
     if (!text) return
+    stopSpeaking()
     addToTranscript("assistant", text)
     announce(text)
     setLastAnswer(text)
-    speakText(text)
+    void speakText(text)
   }
 
-  async function waitForRouting(): Promise<string | null> {
-    if (!routingInFlightRef.current) return pendingResponseRef.current
-    return new Promise((resolve) => {
-      const start = Date.now()
-      const iv = setInterval(() => {
-        if (!routingInFlightRef.current || Date.now() - start > 15000) {
-          clearInterval(iv)
-          resolve(pendingResponseRef.current)
-        }
-      }, 100)
-    })
+  async function runFallback(turnId: number, text: string) {
+    if (turnId !== turnIdRef.current) return
+    if (toolRequestedRef.current || toolInFlightRef.current || agentSpeakingRef.current) return
+
+    const response = await routeInputRef.current(text)
+    if (!response) return
+
+    fallbackDeliveredTurnRef.current = turnId
+    speakFallback(response)
   }
 
   async function toolRoute(text: string): Promise<string> {
+    clearFallbackTimer()
+    toolRequestedRef.current = true
     toolInFlightRef.current = true
-    deliveredRef.current = true
 
     try {
-      const cached = await waitForRouting()
-      if (cached) {
-        pendingResponseRef.current = null
-        routingInFlightRef.current = false
-        return cached
-      }
-      const response = await routeInputRef.current(text)
-      pendingResponseRef.current = null
-      routingInFlightRef.current = false
-      return response || "Done."
+      const input = text.trim() || pendingTextRef.current || ""
+      if (!input) return ""
+
+      // A guarded fallback already answered this exact turn locally.
+      if (fallbackDeliveredTurnRef.current === turnIdRef.current) return ""
+
+      const response = await routeInputRef.current(input)
+      return response || ""
     } finally {
       toolInFlightRef.current = false
     }
@@ -578,6 +587,9 @@ export default function Home() {
       announce("Listening.")
     },
     onDisconnect: () => {
+      clearFallbackTimer()
+      pendingTextRef.current = null
+      toolRequestedRef.current = false
       setVoiceMode("idle")
       agentSpeakingRef.current = false
       toolInFlightRef.current = false
@@ -597,6 +609,12 @@ export default function Home() {
         setVoiceMode("listening")
       }
     },
+    onAgentToolRequest: ({ tool_name }) => {
+      if (["handle_input", "search_web", "open_result", "ask_site"].includes(tool_name)) {
+        toolRequestedRef.current = true
+        clearFallbackTimer()
+      }
+    },
     onMessage: (msg) => {
       try {
         if (msg?.source === "user" && msg?.message) {
@@ -604,24 +622,16 @@ export default function Home() {
           if (isNoise(text)) return
 
           addToTranscript("user", text)
-          deliveredRef.current = false
-
           pendingTextRef.current = text
-          pendingResponseRef.current = null
-          routingInFlightRef.current = true
-          routeInputRef.current(text).then((response) => {
-            pendingResponseRef.current = response
-            routingInFlightRef.current = false
+          toolRequestedRef.current = false
+          fallbackDeliveredTurnRef.current = null
+          turnIdRef.current += 1
+          const turnId = turnIdRef.current
 
-            // If ElevenLabs tool didn't pick it up within 2s, we speak it ourselves
-            setTimeout(() => {
-              if (!deliveredRef.current && response) {
-                deliveredRef.current = true
-                stopSpeaking()
-                speak(response)
-              }
-            }, 2000)
-          }).catch(() => { routingInFlightRef.current = false })
+          clearFallbackTimer()
+          fallbackTimerRef.current = setTimeout(() => {
+            void runFallback(turnId, text)
+          }, 2500)
         }
         if (msg?.source === "ai" && msg?.message) {
           if (isAgentGarbage(msg.message)) return
@@ -649,10 +659,20 @@ export default function Home() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       stream.getTracks().forEach((t) => t.stop())
-      await conversation.startSession({
-        agentId: process.env.NEXT_PUBLIC_ELEVENLABS_AGENT_ID ?? "",
-        connectionType: "webrtc",
-      })
+
+      const authRes = await fetch("/api/voice", { cache: "no-store" })
+      const auth = await authRes.json() as { conversationToken?: string | null; signedUrl?: string | null }
+
+      if (auth.conversationToken) {
+        await conversation.startSession({ conversationToken: auth.conversationToken })
+      } else if (auth.signedUrl) {
+        await conversation.startSession({ signedUrl: auth.signedUrl })
+      } else {
+        await conversation.startSession({
+          agentId: process.env.NEXT_PUBLIC_ELEVENLABS_AGENT_ID ?? "",
+          connectionType: "webrtc",
+        })
+      }
     } catch {
       setVoiceMode("idle")
       announce("Could not connect. Check microphone.")
