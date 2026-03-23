@@ -524,9 +524,25 @@ export default function Home() {
   //  ELEVENLABS — single tool, mutex-protected routing
   // ══════════════════════════════════════════════════════════
 
-  function cancelSafety() {
-    pendingTextRef.current = null
+  function cancelSafety(clearPending = true) {
+    if (clearPending) pendingTextRef.current = null
     if (safetyTimerRef.current) { clearTimeout(safetyTimerRef.current); safetyTimerRef.current = null }
+  }
+
+  function deliverPendingResponse() {
+    setTimeout(async () => {
+      if (agentSpeakingRef.current || toolInFlightRef.current) return
+      let response = pendingResponseRef.current
+      if (!response && routingInFlightRef.current) {
+        response = await waitForRouting()
+      }
+      if (response) {
+        pendingResponseRef.current = null
+        routingInFlightRef.current = false
+        addToTranscript("assistant", response)
+        announce(response)
+      }
+    }, 800)
   }
 
   // Wait for in-flight proactive routing to finish (max 12s to avoid deadlock)
@@ -601,8 +617,7 @@ export default function Home() {
         stopSpeaking()
         agentSpeakingRef.current = true
         setVoiceMode("speaking")
-        // Agent is now talking — cancel safety timer, it's handled
-        cancelSafety()
+        cancelSafety(false)
       } else if (mode === "listening") {
         agentSpeakingRef.current = false
         setVoiceMode("listening")
@@ -657,6 +672,7 @@ export default function Home() {
         if (msg?.source === "ai" && msg?.message) {
           if (isAgentGarbage(msg.message)) {
             console.warn("[voice] filtered agent garbage:", msg.message)
+            deliverPendingResponse()
             return
           }
           addToTranscript("assistant", msg.message)
