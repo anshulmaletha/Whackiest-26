@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import type { TranscriptItem } from "@/types"
 
 type VisualState = "idle" | "listening" | "speaking" | "expanded"
@@ -26,6 +26,7 @@ export default function DynamicIsland({
   const [flashAnswer, setFlashAnswer] = useState(false)
   const prevAnswerRef = useRef<string | null>(null)
   const collapseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const islandRef = useRef<HTMLDivElement>(null)
 
   const visualState: VisualState = !isConnected
     ? "idle"
@@ -63,53 +64,97 @@ export default function DynamicIsland({
     setIsExpanded(false)
   }
 
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    switch (e.key) {
+      case "Enter":
+      case " ":
+        e.preventDefault()
+        handlePillClick()
+        break
+      case "Escape":
+        e.preventDefault()
+        if (isExpanded) {
+          setIsExpanded(false)
+          if (collapseTimerRef.current) clearTimeout(collapseTimerRef.current)
+        } else if (isConnected) {
+          onMicClick()
+        }
+        break
+      case "q":
+        if (isConnected) {
+          e.preventDefault()
+          onMicClick()
+          setIsExpanded(false)
+        }
+        break
+    }
+  }, [isConnected, isExpanded, onMicClick])
+
   const recentTranscript = transcript.slice(-5)
 
-  return (
-    <div className={`di di--${visualState}`}>
-      {/* Glow ring behind the island */}
-      <div className="di-glow" />
+  const ariaLabel = !isConnected
+    ? "Voice assistant — press Enter to start"
+    : isExpanded
+    ? "Voice assistant expanded — press Escape to collapse, Q to end session"
+    : isSpeaking
+    ? "Navia is speaking — press Enter to see transcript, Escape to end"
+    : "Navia is listening — press Enter to see transcript, Escape to end"
 
-      {/* Main content area */}
+  return (
+    <div
+      ref={islandRef}
+      className={`di di--${visualState}`}
+      role="region"
+      aria-label={ariaLabel}
+      aria-live="polite"
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
+    >
+      <div className="di-glow" aria-hidden="true" />
+
       <div className="di-content" onClick={handlePillClick}>
-        {/* ── IDLE ──────────────────────────────────────────────── */}
         {visualState === "idle" && (
           <div className="di-row di-row--center">
-            <div className="di-mic-ring">
+            <div className="di-mic-ring" aria-hidden="true">
               <MicIcon />
             </div>
             <span className="di-cta">Tap to start Navia</span>
           </div>
         )}
 
-        {/* ── LISTENING ─────────────────────────────────────────── */}
         {visualState === "listening" && (
           <div className="di-row di-row--between">
             <div className="di-left">
-              <div className="di-pulse-ring" />
+              <div className="di-pulse-ring" aria-hidden="true" />
               <WaveformBars count={5} variant="green" />
               <span className="di-state-label">Listening…</span>
             </div>
-            <button className="di-close" onClick={handleEndClick} aria-label="End session">
+            <button
+              className="di-close"
+              onClick={handleEndClick}
+              aria-label="End voice session"
+            >
               <XIcon />
             </button>
           </div>
         )}
 
-        {/* ── SPEAKING ──────────────────────────────────────────── */}
         {visualState === "speaking" && (
           <div className="di-row di-row--between">
             <div className="di-left">
               <WaveformBars count={9} variant="accent" />
               <span className="di-state-label di-state-label--accent">Navia is speaking</span>
             </div>
-            <button className="di-close" onClick={handleEndClick} aria-label="End session">
+            <button
+              className="di-close"
+              onClick={handleEndClick}
+              aria-label="End voice session"
+            >
               <XIcon />
             </button>
           </div>
         )}
 
-        {/* ── EXPANDED ──────────────────────────────────────────── */}
         {visualState === "expanded" && (
           <div className="di-expanded">
             <div className="di-expanded__top">
@@ -118,7 +163,7 @@ export default function DynamicIsland({
                   <WaveformBars count={7} variant="accent" />
                 ) : (
                   <>
-                    <div className="di-pulse-ring di-pulse-ring--sm" />
+                    <div className="di-pulse-ring di-pulse-ring--sm" aria-hidden="true" />
                     <WaveformBars count={4} variant="green" />
                   </>
                 )}
@@ -126,23 +171,30 @@ export default function DynamicIsland({
                   {isSpeaking ? "Speaking" : "Listening"}
                 </span>
               </div>
-              <button className="di-close" onClick={handleEndClick} aria-label="End">
+              <button
+                className="di-close"
+                onClick={handleEndClick}
+                aria-label="End voice session"
+              >
                 <XIcon />
               </button>
             </div>
 
-            <div className="di-expanded__body">
+            <div className="di-expanded__body" role="log" aria-label="Conversation transcript">
               {flashAnswer && lastAnswer ? (
-                <div className="di-flash">
-                  <div className="di-flash__avatar">N</div>
+                <div className="di-flash" role="status" aria-live="assertive">
+                  <div className="di-flash__avatar" aria-hidden="true">N</div>
                   <p className="di-flash__text">{lastAnswer}</p>
                 </div>
               ) : recentTranscript.length > 0 ? (
-                <ul className="di-messages">
+                <ul className="di-messages" aria-label="Recent messages">
                   {recentTranscript.map((item, i) => (
                     <li key={i} className={`di-bubble di-bubble--${item.role}`}>
-                      {item.role === "assistant" && <div className="di-bubble__avatar">N</div>}
-                      <span className="di-bubble__text">{item.text}</span>
+                      {item.role === "assistant" && <div className="di-bubble__avatar" aria-hidden="true">N</div>}
+                      <span className="di-bubble__text">
+                        <span className="sr-only">{item.role === "user" ? "You said: " : "Navia said: "}</span>
+                        {item.text}
+                      </span>
                     </li>
                   ))}
                 </ul>
@@ -159,13 +211,9 @@ export default function DynamicIsland({
 
 function WaveformBars({ count, variant }: { count: number; variant: "green" | "accent" }) {
   return (
-    <div className={`di-wave di-wave--${variant}`}>
+    <div className={`di-wave di-wave--${variant}`} aria-hidden="true">
       {Array.from({ length: count }, (_, i) => (
-        <span
-          key={i}
-          className="di-wave__bar"
-          style={{ animationDelay: `${i * 0.09}s` }}
-        />
+        <span key={i} className="di-wave__bar" style={{ animationDelay: `${i * 0.09}s` }} />
       ))}
     </div>
   )
@@ -173,7 +221,7 @@ function WaveformBars({ count, variant }: { count: number; variant: "green" | "a
 
 function MicIcon() {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
       <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
       <line x1="12" y1="19" x2="12" y2="22" />
@@ -183,7 +231,7 @@ function MicIcon() {
 
 function XIcon() {
   return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <line x1="18" y1="6" x2="6" y2="18" />
       <line x1="6" y1="6" x2="18" y2="18" />
     </svg>
