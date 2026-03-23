@@ -113,40 +113,18 @@ export default function Home() {
   const hasConnectedOnceRef = useRef(false)
 
   const routeInputRef = useRef<(text: string) => Promise<string>>(async () => "")
-  const pendingTextRef = useRef<string | null>(null)
-  const pendingRoutePromiseRef = useRef<Promise<string> | null>(null)
-  const pendingResponseRef = useRef<string | null>(null)
-  const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const turnIdRef = useRef(0)
-  const toolRequestedRef = useRef(false)
-  const fallbackDeliveredTurnRef = useRef<number | null>(null)
-  const toolInFlightRef = useRef(false)
-  const agentSpeakingRef = useRef(false)
+  const turnResponseRef = useRef<string | null>(null)
+  const turnSpokenRef = useRef(false)
+  const turnPromiseRef = useRef<Promise<string> | null>(null)
 
-  // ── Noise filter — ONLY actual filler/garbage, NOT valid short queries ──
   const FILLER_WORDS = /^(um+|uh+|hmm*|ah+|oh+|eh+|huh|mhm|like|so|well|right|hey|hi|hello|bye|you know|i see|got it|alright|hm|ha|ho)\.?$/i
 
   function isNoise(text: string): boolean {
     const trimmed = text.trim()
     if (trimmed.length < 2) return true
     if (FILLER_WORDS.test(trimmed)) return true
-    // Only filter single-char or pure punctuation
     if (/^[^a-zA-Z\u0590-\u05FF]*$/.test(trimmed)) return true
-    return false
-  }
-
-  // ── Agent garbage filter — only clear-cut agent filler/refusals ──
-  function isAgentGarbage(text: string): boolean {
-    const t = text.trim().toLowerCase()
-    if (t.length < 3) return true
-    if (t === "not found" || t === "not found.") return true
-    if (t.includes("wasn't able to get a response")) return true
-    if (t.includes("was not able to get a response")) return true
-    if (t.includes("wasn't able to get that information")) return true
-    if (t.includes("was not able to get that information")) return true
-    if (t.includes("could you please repeat your request")) return true
-    if (t.includes("would you like me to try again")) return true
-    if (/^(please speak|say something|are you still there|still listening|are you there|can you hear me)\.?$/.test(t)) return true
     return false
   }
 
@@ -164,11 +142,7 @@ export default function Home() {
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [transcript])
 
-  useEffect(() => {
-    return () => {
-      if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current)
-    }
-  }, [])
+  useEffect(() => {}, [])
 
   // ── Keyboard ──
   useEffect(() => {
@@ -529,85 +503,46 @@ export default function Home() {
   routeInputRef.current = routeInput
 
   // ══════════════════════════════════════════════════════════
-  //  VOICE — agent-driven tool call, guarded local fallback
+  //  VOICE — ElevenLabs = mic only, we always speak ourselves
   // ══════════════════════════════════════════════════════════
 
-  function clearFallbackTimer() {
-    if (fallbackTimerRef.current) {
-      clearTimeout(fallbackTimerRef.current)
-      fallbackTimerRef.current = null
-    }
-  }
-
-  function speakFallback(text: string) {
-    if (!text) return
+  function deliver(response: string, turnId: number) {
+    if (!response || turnId !== turnIdRef.current || turnSpokenRef.current) return
+    turnSpokenRef.current = true
+    turnResponseRef.current = response
     stopSpeaking()
-    addToTranscript("assistant", text)
-    announce(text)
-    setLastAnswer(text)
-    void speakText(text)
+    addToTranscript("assistant", response)
+    announce(response)
+    setLastAnswer(response)
+    void speakText(response)
   }
 
-  async function getPendingResponse(turnId: number, text: string): Promise<string> {
-    if (turnId !== turnIdRef.current) return ""
-    if (pendingResponseRef.current !== null) return pendingResponseRef.current
-    if (pendingRoutePromiseRef.current) return pendingRoutePromiseRef.current
-
-    const promise = routeInputRef.current(text)
-      .then((response) => {
-        if (turnId === turnIdRef.current) pendingResponseRef.current = response
-        return response
-      })
-      .catch(() => "")
-
-    pendingRoutePromiseRef.current = promise
-    return promise
-  }
-
-  async function runFallback(turnId: number, text: string, force = false) {
-    if (turnId !== turnIdRef.current) return
-    if (!force && (toolRequestedRef.current || toolInFlightRef.current)) return
-    if (fallbackDeliveredTurnRef.current === turnId) return
-    if (agentSpeakingRef.current) {
-      setTimeout(() => { void runFallback(turnId, text, force) }, 600)
-      return
-    }
-
-    const response = await getPendingResponse(turnId, text)
-    if (!response) return
-
-    fallbackDeliveredTurnRef.current = turnId
-    speakFallback(response)
-  }
-
-  async function toolRoute(text: string): Promise<string> {
-    clearFallbackTimer()
-    toolRequestedRef.current = true
-    toolInFlightRef.current = true
-
-    try {
-      const input = text.trim() || pendingTextRef.current || ""
-      if (!input) return ""
-
-      // A guarded fallback already answered this exact turn locally.
-      if (fallbackDeliveredTurnRef.current === turnIdRef.current) return ""
-
-      const response = await getPendingResponse(turnIdRef.current, input)
-      return response || ""
-    } finally {
-      toolInFlightRef.current = false
-    }
+  async function computeAndDeliver(text: string, turnId: number) {
+    const promise = routeInputRef.current(text).catch(() => "")
+    turnPromiseRef.current = promise
+    const response = await promise
+    if (turnId === turnIdRef.current) turnResponseRef.current = response
+    deliver(response, turnId)
   }
 
   const conversation = useConversation({
     clientTools: {
-      handle_input: async (params: { text: string }) => toolRoute(params.text),
-      search_web: async (params: { query?: string }) =>
-        toolRoute(params.query || pendingTextRef.current || "search"),
-      open_result: async (params: { index?: number }) =>
-        toolRoute(pendingTextRef.current || `open result ${params.index ?? 1}`),
-      ask_site: async (params: { question?: string }) =>
-        toolRoute(params.question || pendingTextRef.current || "tell me about this site"),
+      handle_input: async () => {
+        if (turnPromiseRef.current) await turnPromiseRef.current
+        return turnResponseRef.current || ""
+      },
+      search_web: async () => {
+        if (turnPromiseRef.current) await turnPromiseRef.current
+        return turnResponseRef.current || ""
+      },
+      open_result: async () => {
+        if (turnPromiseRef.current) await turnPromiseRef.current
+        return turnResponseRef.current || ""
+      },
+      ask_site: async () => {
+        if (turnPromiseRef.current) await turnPromiseRef.current
+        return turnResponseRef.current || ""
+      },
     },
     onConnect: () => {
       reconnectCountRef.current = 0
@@ -616,14 +551,7 @@ export default function Home() {
       announce("Listening.")
     },
     onDisconnect: () => {
-      clearFallbackTimer()
-      pendingTextRef.current = null
-      pendingResponseRef.current = null
-      pendingRoutePromiseRef.current = null
-      toolRequestedRef.current = false
       setVoiceMode("idle")
-      agentSpeakingRef.current = false
-      toolInFlightRef.current = false
       if (intentionalEndRef.current) { intentionalEndRef.current = false; return }
       if (reconnectCountRef.current < 3 && hasConnectedOnceRef.current && !sessionStartingRef.current) {
         reconnectCountRef.current++
@@ -632,18 +560,10 @@ export default function Home() {
     },
     onModeChange: ({ mode }) => {
       if (mode === "speaking") {
-        stopSpeaking()
-        agentSpeakingRef.current = true
+        stopSpeaking() // kill browser TTS so agent voice doesn't overlap
         setVoiceMode("speaking")
       } else if (mode === "listening") {
-        agentSpeakingRef.current = false
         setVoiceMode("listening")
-      }
-    },
-    onAgentToolRequest: ({ tool_name }) => {
-      if (["handle_input", "search_web", "open_result", "ask_site"].includes(tool_name)) {
-        toolRequestedRef.current = true
-        clearFallbackTimer()
       }
     },
     onMessage: (msg) => {
@@ -652,37 +572,19 @@ export default function Home() {
           const text = msg.message
           if (isNoise(text)) return
 
-          addToTranscript("user", text)
           turnIdRef.current += 1
           const turnId = turnIdRef.current
-          pendingTextRef.current = text
-          pendingResponseRef.current = null
-          pendingRoutePromiseRef.current = getPendingResponse(turnId, text)
-          toolRequestedRef.current = false
-          fallbackDeliveredTurnRef.current = null
+          turnSpokenRef.current = false
+          turnResponseRef.current = null
+          turnPromiseRef.current = null
 
-          clearFallbackTimer()
-          fallbackTimerRef.current = setTimeout(() => {
-            void runFallback(turnId, text)
-          }, 2500)
-        }
-        if (msg?.source === "ai" && msg?.message) {
-          if (isAgentGarbage(msg.message)) {
-            if (pendingTextRef.current) {
-              clearFallbackTimer()
-              setTimeout(() => {
-                void runFallback(turnIdRef.current, pendingTextRef.current ?? "", true)
-              }, 250)
-            }
-            return
-          }
-          addToTranscript("assistant", msg.message)
-          setLastAnswer(msg.message)
+          addToTranscript("user", text)
+          void computeAndDeliver(text, turnId)
         }
       } catch { /* protect against SDK errors */ }
     },
     onError: (err) => console.error("[voice]", err),
-    onUnhandledClientToolCall: (p) => console.warn("[voice] unhandled tool:", p),
+    onUnhandledClientToolCall: () => {},
     onStatusChange: ({ status }) => console.log("[voice]", status),
   })
 
@@ -692,7 +594,6 @@ export default function Home() {
   const sessionStartingRef = useRef(false)
 
   async function startSession() {
-    // Prevent double session starts
     if (sessionStartingRef.current || conversation.status === "connected") return
     sessionStartingRef.current = true
     setVoiceMode("connecting")
@@ -701,19 +602,10 @@ export default function Home() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       stream.getTracks().forEach((t) => t.stop())
 
-      const authRes = await fetch("/api/voice", { cache: "no-store" })
-      const auth = await authRes.json() as { conversationToken?: string | null; signedUrl?: string | null }
-
-      if (auth.conversationToken) {
-        await conversation.startSession({ conversationToken: auth.conversationToken })
-      } else if (auth.signedUrl) {
-        await conversation.startSession({ signedUrl: auth.signedUrl })
-      } else {
-        await conversation.startSession({
-          agentId: process.env.NEXT_PUBLIC_ELEVENLABS_AGENT_ID ?? "",
-          connectionType: "webrtc",
-        })
-      }
+      await conversation.startSession({
+        agentId: process.env.NEXT_PUBLIC_ELEVENLABS_AGENT_ID ?? "",
+        connectionType: "webrtc",
+      })
     } catch {
       setVoiceMode("idle")
       announce("Could not connect. Check microphone.")
