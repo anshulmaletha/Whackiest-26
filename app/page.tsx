@@ -30,10 +30,16 @@ export default function Home() {
   const resultsRef = useRef<SearchResult[]>([])
   resultsRef.current = results
   const sitePanelRef = useRef<HTMLElement>(null)
+  const transcriptEndRef = useRef<HTMLDivElement>(null)
 
   function addToTranscript(role: "user" | "assistant", text: string) {
-    setTranscript((prev) => [...prev, { role, text }])
+    setTranscript((prev) => [...prev, { role, text, timestamp: Date.now() }])
+    if (role === "assistant") setLastAnswer(text)
   }
+
+  useEffect(() => {
+    transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" })
+  }, [transcript])
 
   function announce(text: string) {
     setAnnouncement("")
@@ -47,14 +53,12 @@ export default function Home() {
       const target = e.target as HTMLElement
       const isInput = target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable
 
-      // Slash focuses search (if not already in input)
       if (e.key === "/" && !isInput) {
         e.preventDefault()
         document.querySelector<HTMLInputElement>(".search-input")?.focus()
         return
       }
 
-      // Escape from site panel goes back to results
       if (e.key === "Escape" && sitePanelRef.current?.contains(target)) {
         e.preventDefault()
         if (focusedIndex >= 0) {
@@ -91,9 +95,9 @@ export default function Home() {
         setResults(data.results)
         setFocusedIndex(0)
         const top = data.results[0] as SearchResult
-        const msg = `Found ${data.results.length} results. Top: ${top.title}.`
+        const msg = `Found ${data.results.length} results. Top result: ${top.title}.`
         addToTranscript("assistant", msg)
-        announce(`${data.results.length} results found. ${top.title} is first. Use arrow keys to browse results, Enter to open.`)
+        announce(`${data.results.length} results found. ${top.title} is first. Use arrow keys to browse, Enter to open.`)
       } else {
         addToTranscript("assistant", "No results found.")
         announce("No results found. Try a different search.")
@@ -112,16 +116,16 @@ export default function Home() {
     setSelectedResultId(result.id)
     setIsLoadingSite(true)
     setCurrentSite(null)
-    addToTranscript("user", `Open: ${result.title}`)
+    addToTranscript("user", `Opening: ${result.title}`)
     announce(`Opening ${result.title}...`)
 
     const cached = getCachedSite(result.url)
     if (cached) {
       setCurrentSite(cached)
       setIsLoadingSite(false)
-      const msg = `${cached.siteName}. ${cached.summary.slice(0, 100)}`
+      const msg = `${cached.siteName} — ${cached.summary.slice(0, 120)}`
       addToTranscript("assistant", msg)
-      announce(`${cached.siteName} loaded. ${cached.summary.slice(0, 120)}. Use Tab to reach site details and quick actions.`)
+      announce(`${cached.siteName} loaded. Use Tab to explore details and quick actions.`)
       sitePanelRef.current?.focus()
       return
     }
@@ -137,9 +141,9 @@ export default function Home() {
         const sd: SiteData = data.siteData
         setCachedSite(result.url, sd)
         setCurrentSite(sd)
-        const msg = `${sd.siteName}. ${sd.summary.slice(0, 100)}`
+        const msg = `${sd.siteName} — ${sd.summary.slice(0, 120)}`
         addToTranscript("assistant", msg)
-        announce(`${sd.siteName} loaded. ${sd.summary.slice(0, 120)}. Use Tab to reach site details and quick actions.`)
+        announce(`${sd.siteName} loaded. Use Tab to explore details and quick actions.`)
         sitePanelRef.current?.focus()
       } else {
         addToTranscript("assistant", "Could not read site.")
@@ -153,7 +157,7 @@ export default function Home() {
     }
   }, [])
 
-  // ─── Quick action (local logic + free TTS) ──────────────────────────────
+  // ─── Quick action (local logic + free TTS, no credits) ──────────────────
 
   const handleQuickAction = useCallback(async (question: string) => {
     const sd = currentSiteRef.current
@@ -165,12 +169,11 @@ export default function Home() {
     addToTranscript("user", question)
     const answer = answerFromSiteContext(question, sd)
     addToTranscript("assistant", answer)
-    setLastAnswer(answer)
     announce(answer)
     speakText(answer)
   }, [])
 
-  // ─── ElevenLabs Agent ────────────────────────────────────────────────────
+  // ─── ElevenLabs Agent (minimal credit usage) ────────────────────────────
 
   const conversation = useConversation({
     clientTools: {
@@ -236,10 +239,8 @@ export default function Home() {
 
   return (
     <div className="app">
-      {/* Skip link */}
       <a href="#main-content" className="skip-link">Skip to main content</a>
 
-      {/* Screen reader announcements */}
       <div className="sr-only" role="status" aria-live="assertive" aria-atomic="true">
         {announcement}
       </div>
@@ -252,6 +253,7 @@ export default function Home() {
       </header>
 
       <main id="main-content" className="layout" role="main">
+        {/* ── Left column: search + results ── */}
         <section className="col-left" aria-label="Search and results">
           <SearchBar
             query={query}
@@ -271,6 +273,7 @@ export default function Home() {
           />
         </section>
 
+        {/* ── Right column: site details ── */}
         <section
           ref={sitePanelRef}
           className="col-right"
@@ -285,6 +288,27 @@ export default function Home() {
         </section>
       </main>
 
+      {/* ── Transcript bar (always visible, shows all text) ── */}
+      <div className="transcript-bar" role="log" aria-label="Conversation history" aria-live="polite">
+        <div className="transcript-bar__inner">
+          {transcript.length === 0 ? (
+            <p className="transcript-bar__empty">
+              Your conversation with Navia will appear here — everything spoken is also shown as text.
+            </p>
+          ) : (
+            <div className="transcript-bar__messages">
+              {transcript.map((item, i) => (
+                <div key={i} className={`transcript-msg transcript-msg--${item.role}`}>
+                  <span className="transcript-msg__role">{item.role === "user" ? "You" : "Navia"}</span>
+                  <span className="transcript-msg__text">{item.text}</span>
+                </div>
+              ))}
+              <div ref={transcriptEndRef} />
+            </div>
+          )}
+        </div>
+      </div>
+
       <DynamicIsland
         transcript={transcript}
         isListening={isListening}
@@ -297,7 +321,7 @@ export default function Home() {
   )
 }
 
-const SYSTEM_PROMPT = `You are Navia, a voice assistant for blind and visually impaired users to browse any website on the internet.
+const SYSTEM_PROMPT = `You are Navia, a voice assistant that helps blind and visually impaired users browse ANY website on the internet.
 
 RULES — follow strictly:
 - Maximum 2 sentences per response. Never more.
@@ -307,10 +331,11 @@ RULES — follow strictly:
 - When asked for specific info, answer with just the data.
 - Never use filler phrases.
 - If you don't know, say "I don't have that info."
-- You help with ANY website — news, shopping, government, education, health, anything.
-- You are a general web browsing assistant, not limited to businesses.
+- You help with EVERY kind of website — news, Wikipedia, shopping, government, health, education, forums, articles, anything.
+- You are a general web browsing assistant. Not limited to businesses or services.
+- Always speak the answer. The user cannot see text.
 
 TOOLS:
-- search_web: searches the web for anything.
-- open_result: opens a result and extracts site info.
-- ask_site: answers a question from the currently open site.`
+- search_web: searches the web for anything the user asks.
+- open_result: opens a search result and reads the website.
+- ask_site: answers a question about the currently open website.`

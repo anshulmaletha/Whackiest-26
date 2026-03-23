@@ -8,12 +8,12 @@ interface Props {
 }
 
 const ACTIONS = [
-  { label: "Explain this page", question: "What is this website about?", key: "1" },
-  { label: "Phone number", question: "What is the phone number?", key: "2" },
-  { label: "Contact info", question: "What is the email or contact info?", key: "3" },
-  { label: "Address / Location", question: "Where is the address?", key: "4" },
-  { label: "Opening hours", question: "What are the opening hours?", key: "5" },
-  { label: "Main content", question: "Summarize the main content of this page", key: "6" },
+  { icon: "💡", label: "What's this page about?", question: "What is this website about?" },
+  { icon: "📑", label: "Page sections", question: "What are the main headings or sections on this page?" },
+  { icon: "🔗", label: "Links on this page", question: "What are the main links on this page?" },
+  { icon: "📝", label: "Summarize content", question: "Summarize the main content of this page" },
+  { icon: "📞", label: "Phone / Contact", question: "What is the phone number or contact info?" },
+  { icon: "📍", label: "Address / Location", question: "Where is the address?" },
 ]
 
 export default function QuickActions({ onAction, disabled }: Props) {
@@ -44,7 +44,7 @@ export default function QuickActions({ onAction, disabled }: Props) {
   }, [])
 
   return (
-    <div className="quick-actions" role="group" aria-label="Quick actions — press a button to ask about this page">
+    <div className="quick-actions" role="group" aria-label="Quick actions — ask common questions about this page">
       <span className="quick-actions__label" id="qa-label">Quick ask</span>
       <div
         ref={gridRef}
@@ -59,9 +59,10 @@ export default function QuickActions({ onAction, disabled }: Props) {
             onClick={() => onAction(a.question)}
             disabled={disabled}
             className="quick-action-btn"
-            aria-label={`${a.label} — shortcut key ${a.key}`}
+            aria-label={a.label}
             tabIndex={i === 0 ? 0 : -1}
           >
+            <span className="quick-action-btn__icon" aria-hidden="true">{a.icon}</span>
             {a.label}
           </button>
         ))}

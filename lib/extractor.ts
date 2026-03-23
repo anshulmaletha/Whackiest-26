@@ -1,12 +1,10 @@
 import type { SiteData } from "@/types"
 
-// Israeli + international phone patterns
 const PHONE_REGEX =
   /(?:(?:\+972|972|0)[-\s]?)(?:[23489][-\s]?\d{7}|5\d[-\s]?\d{6})|(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g
 
 const EMAIL_REGEX = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g
 
-// Address heuristics: look for numbered street addresses or known keywords
 const ADDRESS_REGEX =
   /\d{1,5}\s+[\w\s]{3,40}(?:street|st|avenue|ave|road|rd|blvd|boulevard|lane|ln|drive|dr|way|court|ct|רחוב|כתובת)[^,\n]*/gi
 
@@ -25,6 +23,9 @@ const SERVICES_KEYWORDS = [
 ]
 
 const CONTACT_HREF_REGEX = /href="((?:tel:|mailto:|\/contact[^"]*)[^"]*)"/gi
+
+const NOISE_REGEX =
+  /cookie|consent|privacy policy|gdpr|accept|we use cookies|by continuing|clicking agree|terms of use|subscribe to our|newsletter|sign up for|javascript|enable js/i
 
 function extractPhone(text: string): string | undefined {
   const matches = text.match(PHONE_REGEX)
@@ -50,7 +51,6 @@ function extractHours(text: string): string | undefined {
 function extractServices(text: string): string[] {
   const lines = text.split(/\n|•|·|–|-/)
   const results: string[] = []
-
   let inServicesSection = false
 
   for (const line of lines) {
@@ -71,7 +71,6 @@ function extractServices(text: string): string[] {
       if (results.length >= 6) break
     }
 
-    // Reset section if we hit a new section header (all caps line or long line)
     if (inServicesSection && (trimmed.length > 100 || trimmed === trimmed.toUpperCase())) {
       inServicesSection = false
     }
@@ -92,12 +91,40 @@ function extractContactLinks(html: string): string[] {
   return [...new Set(links)].slice(0, 5)
 }
 
+function extractHeadings(markdown: string): string[] {
+  const headings: string[] = []
+  const lines = markdown.split("\n")
+  for (const line of lines) {
+    const match = line.match(/^#{1,3}\s+(.+)$/)
+    if (match && !NOISE_REGEX.test(match[1])) {
+      headings.push(match[1].trim())
+      if (headings.length >= 10) break
+    }
+  }
+  return headings
+}
+
+function extractLinks(markdown: string): { text: string; href: string }[] {
+  const linkRegex = /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g
+  const links: { text: string; href: string }[] = []
+  let match: RegExpExecArray | null
+
+  linkRegex.lastIndex = 0
+  while ((match = linkRegex.exec(markdown)) !== null) {
+    const text = match[1].trim()
+    if (text.length > 2 && text.length < 80 && !NOISE_REGEX.test(text)) {
+      links.push({ text, href: match[2] })
+      if (links.length >= 15) break
+    }
+  }
+
+  return links
+}
+
 function extractSiteName(markdown: string, url: string): string {
-  // Try first H1
   const h1Match = markdown.match(/^#\s+(.+)$/m)
   if (h1Match) return h1Match[1].trim()
 
-  // Fall back to hostname
   try {
     const hostname = new URL(url).hostname.replace(/^www\./, "")
     return hostname
@@ -105,9 +132,6 @@ function extractSiteName(markdown: string, url: string): string {
     return url
   }
 }
-
-const NOISE_REGEX =
-  /cookie|consent|privacy policy|gdpr|accept|we use cookies|by continuing|clicking agree|terms of use|subscribe to our|newsletter|sign up for|javascript|enable js/i
 
 function buildSummary(markdown: string): string {
   const lines = markdown.split("\n")
@@ -122,7 +146,6 @@ function buildSummary(markdown: string): string {
       return trimmed.slice(0, 300)
     }
   }
-  // All lines were noise — return best non-noise paragraph from first 2000 chars
   const cleaned = markdown
     .split("\n")
     .filter((l) => !NOISE_REGEX.test(l) && l.trim().length > 20)
@@ -154,6 +177,8 @@ export function extractSiteData(
   return {
     siteName: extractSiteName(markdown, url),
     summary: buildSummary(markdown),
+    headings: extractHeadings(markdown),
+    links: extractLinks(markdown),
     phone: extractPhone(extractedText),
     email: extractEmail(extractedText),
     address: extractAddress(extractedText),

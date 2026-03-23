@@ -10,6 +10,8 @@ export type SearchResult = {
 export type SiteData = {
   siteName: string
   summary: string
+  headings?: string[]
+  links?: { text: string; href: string }[]
   phone?: string
   address?: string
   hours?: string
@@ -22,6 +24,7 @@ export type SiteData = {
 export type TranscriptItem = {
   role: "user" | "assistant"
   text: string
+  timestamp?: number
 }
 
 export type AppState = {
