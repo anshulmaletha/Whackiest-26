@@ -3,13 +3,14 @@
 import { useState, useEffect, useRef, useCallback } from "react"
 import type { TranscriptItem } from "@/types"
 
-type VisualState = "idle" | "listening" | "speaking" | "expanded"
+type VisualState = "idle" | "connecting" | "listening" | "speaking" | "expanded"
 
 interface Props {
   transcript: TranscriptItem[]
   isListening: boolean
   isSpeaking: boolean
   isConnected: boolean
+  isConnecting?: boolean
   lastAnswer: string | null
   onMicClick: () => void
 }
@@ -19,6 +20,7 @@ export default function DynamicIsland({
   isListening,
   isSpeaking,
   isConnected,
+  isConnecting,
   lastAnswer,
   onMicClick,
 }: Props) {
@@ -28,7 +30,9 @@ export default function DynamicIsland({
   const collapseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const islandRef = useRef<HTMLDivElement>(null)
 
-  const visualState: VisualState = !isConnected
+  const visualState: VisualState = isConnecting
+    ? "connecting"
+    : !isConnected
     ? "idle"
     : isExpanded
     ? "expanded"
@@ -119,6 +123,13 @@ export default function DynamicIsland({
               <MicIcon />
             </div>
             <span className="di-cta">Tap to start Navia</span>
+          </div>
+        )}
+
+        {visualState === "connecting" && (
+          <div className="di-row di-row--center">
+            <div className="di-spinner" aria-hidden="true" />
+            <span className="di-state-label">Connecting…</span>
           </div>
         )}
 

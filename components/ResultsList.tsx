@@ -11,6 +11,7 @@ interface Props {
   onOpen: (result: SearchResult) => void
   focusedIndex: number
   onFocusedIndexChange: (index: number) => void
+  isSearching?: boolean
 }
 
 export default function ResultsList({
@@ -20,11 +21,11 @@ export default function ResultsList({
   onOpen,
   focusedIndex,
   onFocusedIndexChange,
+  isSearching,
 }: Props) {
   const listRef = useRef<HTMLUListElement>(null)
   const itemRefs = useRef<(HTMLLIElement | null)[]>([])
 
-  // Focus the item when focusedIndex changes
   useEffect(() => {
     if (focusedIndex >= 0 && focusedIndex < results.length) {
       itemRefs.current[focusedIndex]?.focus()
@@ -73,11 +74,20 @@ export default function ResultsList({
     [focusedIndex, results, onOpen, onFocusedIndexChange]
   )
 
+  if (isSearching) {
+    return (
+      <div className="results-loading" role="status">
+        <div className="results-loading__spinner" aria-hidden="true" />
+        <span>Searching the web...</span>
+      </div>
+    )
+  }
+
   if (results.length === 0) {
     return (
       <div className="results-empty" role="status">
-        <span>No results yet.</span>
-        <p>Search for anything — a website, a topic, a business, a question. Use the search bar above or press the mic button.</p>
+        <span className="results-empty__title">Search anything</span>
+        <p>A website, a business, a topic, a question — Navia helps you search, understand, and use any website by voice.</p>
       </div>
     )
   }
@@ -87,7 +97,7 @@ export default function ResultsList({
       ref={listRef}
       className="results-list"
       role="listbox"
-      aria-label={`${results.length} search results. Use arrow keys to navigate, Enter to open.`}
+      aria-label={`${results.length} results. Arrow keys to navigate, Enter to open.`}
       onKeyDown={handleKeyDown}
       tabIndex={-1}
     >

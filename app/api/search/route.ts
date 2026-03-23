@@ -11,16 +11,14 @@ export async function POST(req: NextRequest) {
     }
 
     const raw = await searchWeb(query.trim())
+    const data = (raw.data ?? []) as Array<{
+      url?: string
+      title?: string
+      description?: string
+      markdown?: string
+    }>
 
-    const results = formatSearchResults(
-      (raw as { data?: unknown[] }).data as Array<{
-        url?: string
-        title?: string
-        description?: string
-        markdown?: string
-      }> ?? [],
-      query
-    )
+    const results = formatSearchResults(data, query)
 
     return NextResponse.json({ results })
   } catch (err) {

@@ -1,4 +1,17 @@
 let speaking = false
+let currentRate = 1.05
+
+export function setSpeechRate(rate: number) {
+  currentRate = Math.max(0.5, Math.min(2.0, rate))
+}
+
+export function getSpeechRate(): number {
+  return currentRate
+}
+
+export function isSpeaking(): boolean {
+  return speaking
+}
 
 export function speakText(text: string): Promise<void> {
   return new Promise((resolve) => {
@@ -12,7 +25,7 @@ export function speakText(text: string): Promise<void> {
     }
 
     const utterance = new SpeechSynthesisUtterance(text)
-    utterance.rate = 1.05
+    utterance.rate = currentRate
     utterance.pitch = 1.0
 
     const voices = window.speechSynthesis.getVoices()

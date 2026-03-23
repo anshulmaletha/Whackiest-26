@@ -7,17 +7,19 @@ export type SearchResult = {
   source?: string
 }
 
+export type SearchContext = {
+  intent: "search" | "open" | "ask" | "ignore"
+  query: string
+  category: string
+  extractFields: string[]
+}
+
 export type SiteData = {
   siteName: string
   summary: string
+  keyInfo: Record<string, string>
   headings?: string[]
   links?: { text: string; href: string }[]
-  phone?: string
-  address?: string
-  hours?: string
-  email?: string
-  services?: string[]
-  contactLinks?: string[]
   extractedText?: string
 }
 
@@ -25,17 +27,4 @@ export type TranscriptItem = {
   role: "user" | "assistant"
   text: string
   timestamp?: number
-}
-
-export type AppState = {
-  query: string
-  results: SearchResult[]
-  selectedResult: SearchResult | null
-  selectedResultId: string | null
-  currentSite: SiteData | null
-  transcript: TranscriptItem[]
-  isListening: boolean
-  isSpeaking: boolean
-  isLoadingResults: boolean
-  isLoadingSite: boolean
 }
