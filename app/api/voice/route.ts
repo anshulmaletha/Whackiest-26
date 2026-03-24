@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 
 const AGENT_ID = process.env.NEXT_PUBLIC_ELEVENLABS_AGENT_ID ?? ""
 const API_KEY = process.env.ELEVENLABS_API_KEY ?? ""
+const JUDGE_SECRET = process.env.JUDGE_SECRET ?? ""
 
 // ── Per-IP session tracking (in-memory, resets on cold start) ──
 
@@ -13,7 +14,7 @@ interface SessionRecord {
 
 const ipSessions = new Map<string, SessionRecord[]>()
 
-const MAX_SECONDS_PER_HOUR = 300 // 5 minutes total voice per IP per hour
+const MAX_SECONDS_PER_HOUR = 300
 const HOUR_MS = 60 * 60 * 1000
 
 function getIp(req: NextRequest): string {
@@ -22,6 +23,13 @@ function getIp(req: NextRequest): string {
     req.headers.get("x-real-ip") ||
     "unknown"
   )
+}
+
+function isJudge(req: NextRequest): boolean {
+  if (!JUDGE_SECRET) return false
+  const fromParam = req.nextUrl.searchParams.get("key")
+  const fromHeader = req.headers.get("x-judge-key")
+  return fromParam === JUDGE_SECRET || fromHeader === JUDGE_SECRET
 }
 
 function pruneOldRecords(records: SessionRecord[]): SessionRecord[] {
@@ -37,19 +45,23 @@ function generateSessionId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-// ── ElevenLabs token fetchers ──
+function log(level: "info" | "warn" | "error", event: string, data: Record<string, unknown>) {
+  const entry = { ts: new Date().toISOString(), event, ...data }
+  if (level === "error") console.error("[VOICE]", JSON.stringify(entry))
+  else if (level === "warn") console.warn("[VOICE]", JSON.stringify(entry))
+  else console.log("[VOICE]", JSON.stringify(entry))
+}
+
+// ── ElevenLabs signed URL ──
 
 async function getSignedUrl() {
   const res = await fetch(
     `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${AGENT_ID}`,
-    {
-      headers: { "xi-api-key": API_KEY },
-      cache: "no-store",
-    }
+    { headers: { "xi-api-key": API_KEY }, cache: "no-store" }
   )
 
   if (!res.ok) {
-    console.warn("[/api/voice] signed URL failed, status:", res.status)
+    log("warn", "elevenlabs_signed_url_failed", { status: res.status })
     return null
   }
 
@@ -57,34 +69,30 @@ async function getSignedUrl() {
   return typeof data.signed_url === "string" ? data.signed_url : null
 }
 
-// ── GET: Issue a signed URL (rate-limited per IP) ──
+// ── GET: Issue a signed URL (rate-limited per IP, judge bypass) ──
 
 export async function GET(req: NextRequest) {
+  const ip = getIp(req)
+  const judge = isJudge(req)
+
   if (!API_KEY || !AGENT_ID) {
-    return NextResponse.json(
-      { error: "ElevenLabs not configured" },
-      { status: 500 }
-    )
+    log("error", "not_configured", { ip })
+    return NextResponse.json({ error: "ElevenLabs not configured" }, { status: 500 })
   }
 
-  const ip = getIp(req)
-
-  // Prune + check limit
+  // Prune + check limit (skipped for judges)
   const records = pruneOldRecords(ipSessions.get(ip) || [])
   ipSessions.set(ip, records)
-
   const usedSeconds = getTotalSeconds(records)
-  if (usedSeconds >= MAX_SECONDS_PER_HOUR) {
+
+  if (!judge && usedSeconds >= MAX_SECONDS_PER_HOUR) {
     const oldestStart = records.length > 0 ? records[0].startTime : Date.now()
-    const retryAfterSeconds = Math.ceil(
-      (oldestStart + HOUR_MS - Date.now()) / 1000
-    )
-    console.warn(
-      `[/api/voice] IP ${ip} rate limited: ${usedSeconds}s used of ${MAX_SECONDS_PER_HOUR}s`
-    )
+    const retryAfterSeconds = Math.ceil((oldestStart + HOUR_MS - Date.now()) / 1000)
+    log("warn", "rate_limited", { ip, usedSeconds, retryAfterSeconds })
     return NextResponse.json(
       {
-        error: `Session limit reached. You have used ${Math.round(usedSeconds / 60)} minutes this hour. Please try again in ${Math.ceil(retryAfterSeconds / 60)} minutes.`,
+        error: `Live voice limit reached. You've used ${Math.round(usedSeconds / 60)} minutes this hour. You can still explore the text demo. Try voice again in ${Math.ceil(retryAfterSeconds / 60)} minutes.`,
+        rateLimited: true,
         retryAfterSeconds,
         usedSeconds,
         maxSeconds: MAX_SECONDS_PER_HOUR,
@@ -96,22 +104,16 @@ export async function GET(req: NextRequest) {
   try {
     const signedUrl = await getSignedUrl()
     if (!signedUrl) {
-      return NextResponse.json(
-        { error: "Could not get session URL" },
-        { status: 502 }
-      )
+      log("error", "signed_url_unavailable", { ip })
+      return NextResponse.json({ error: "Could not get session URL" }, { status: 502 })
     }
 
     const sessionId = generateSessionId()
-
-    // Record a new session with 0 duration (will be updated via POST on end)
     records.push({ startTime: Date.now(), durationSeconds: 0, sessionId })
     ipSessions.set(ip, records)
 
     const remainingSeconds = MAX_SECONDS_PER_HOUR - usedSeconds
-    console.log(
-      `[/api/voice] IP ${ip}: session ${sessionId} started, ${remainingSeconds}s remaining`
-    )
+    log("info", "session_started", { ip, sessionId, usedSeconds, remainingSeconds, judge })
 
     return NextResponse.json({
       signedUrl,
@@ -120,17 +122,15 @@ export async function GET(req: NextRequest) {
       maxSessionSeconds: 120,
     })
   } catch (err) {
-    console.error("[/api/voice] GET error:", err)
-    return NextResponse.json(
-      { error: "Server error" },
-      { status: 500 }
-    )
+    log("error", "get_error", { ip, err: String(err) })
+    return NextResponse.json({ error: "Server error" }, { status: 500 })
   }
 }
 
 // ── POST: Report session end + duration ──
 
 export async function POST(req: NextRequest) {
+  const ip = getIp(req)
   try {
     const body = (await req.json()) as {
       sessionId?: string
@@ -141,30 +141,31 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing fields" }, { status: 400 })
     }
 
-    const ip = getIp(req)
     const records = pruneOldRecords(ipSessions.get(ip) || [])
     const session = records.find((r) => r.sessionId === body.sessionId)
 
+    const capped = Math.min(body.durationSeconds, 130)
+
     if (session) {
-      // Cap reported duration to 130s (2min + buffer) to prevent abuse
-      session.durationSeconds = Math.min(body.durationSeconds, 130)
-      console.log(
-        `[/api/voice] IP ${ip}: session ${body.sessionId} ended, duration=${session.durationSeconds}s`
-      )
+      session.durationSeconds = capped
     } else {
-      // Session not found (cold start / pruned) — still record it
       records.push({
-        startTime: Date.now() - body.durationSeconds * 1000,
-        durationSeconds: Math.min(body.durationSeconds, 130),
+        startTime: Date.now() - capped * 1000,
+        durationSeconds: capped,
         sessionId: body.sessionId,
       })
-      console.log(
-        `[/api/voice] IP ${ip}: session ${body.sessionId} recorded retroactively, duration=${body.durationSeconds}s`
-      )
     }
 
     ipSessions.set(ip, records)
     const totalUsed = getTotalSeconds(records)
+
+    log("info", "session_ended", {
+      ip,
+      sessionId: body.sessionId,
+      durationSeconds: capped,
+      totalUsedSeconds: totalUsed,
+      remainingSeconds: Math.max(0, MAX_SECONDS_PER_HOUR - totalUsed),
+    })
 
     return NextResponse.json({
       ok: true,
@@ -172,7 +173,7 @@ export async function POST(req: NextRequest) {
       remainingSeconds: Math.max(0, MAX_SECONDS_PER_HOUR - totalUsed),
     })
   } catch (err) {
-    console.error("[/api/voice] POST error:", err)
+    log("error", "post_error", { ip, err: String(err) })
     return NextResponse.json({ error: "Server error" }, { status: 500 })
   }
 }

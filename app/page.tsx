@@ -990,12 +990,17 @@ export default function Home() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       stream.getTracks().forEach((t) => t.stop())
 
-      // Fetch rate-limited signed URL from our server
-      const voiceRes = await fetch("/api/voice")
+      // Pass judge key from URL if present (e.g. ?key=secret)
+      const judgeKey = new URLSearchParams(window.location.search).get("key")
+      const voiceUrl = judgeKey ? `/api/voice?key=${encodeURIComponent(judgeKey)}` : "/api/voice"
+
+      const voiceRes = await fetch(voiceUrl)
       if (voiceRes.status === 429) {
         const data = await voiceRes.json()
         setVoiceMode("idle")
-        announce(data.error ?? "Session limit reached. Please try again later.")
+        const msg = data.error ?? "Live voice limit reached. You can still explore the text demo. Try voice again later."
+        announce(msg)
+        addToTranscript("assistant", msg)
         return
       }
       if (!voiceRes.ok) {
