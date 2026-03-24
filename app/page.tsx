@@ -143,6 +143,33 @@ export default function Home() {
   const reconnectCountRef = useRef(0)
   const intentionalEndRef = useRef(false)
   const hasConnectedOnceRef = useRef(false)
+  const timeLimitEndRef = useRef(false)
+
+  // ── Session timer (2-min max) + duration tracking ──
+  const sessionWarnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const sessionEndTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const sessionStartTimeRef = useRef(0)
+  const sessionIdRef = useRef<string | null>(null)
+  const MAX_SESSION_MS = 120_000 // 2 minutes
+  const WARN_BEFORE_MS = 10_000  // warn 10s before end
+
+  function clearSessionTimers() {
+    if (sessionWarnTimerRef.current) { clearTimeout(sessionWarnTimerRef.current); sessionWarnTimerRef.current = null }
+    if (sessionEndTimerRef.current) { clearTimeout(sessionEndTimerRef.current); sessionEndTimerRef.current = null }
+  }
+
+  function reportSessionDuration() {
+    if (!sessionIdRef.current || !sessionStartTimeRef.current) return
+    const durationSeconds = Math.round((Date.now() - sessionStartTimeRef.current) / 1000)
+    fetch("/api/voice", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: sessionIdRef.current, durationSeconds }),
+    }).catch(() => {})
+    console.log(`[SESSION] reported duration: ${durationSeconds}s for session ${sessionIdRef.current}`)
+    sessionIdRef.current = null
+    sessionStartTimeRef.current = 0
+  }
 
   const routeInputRef = useRef<(text: string) => Promise<string>>(async () => "")
   const turnIdRef = useRef(0)
@@ -870,14 +897,40 @@ export default function Home() {
       reconnectCountRef.current = 0
       hasConnectedOnceRef.current = true
       connectedRef.current = true
+      timeLimitEndRef.current = false
       setVoiceMode("listening")
       announce("Listening.")
+
+      // Start 2-minute session timer
+      sessionStartTimeRef.current = Date.now()
+      clearSessionTimers()
+      sessionWarnTimerRef.current = setTimeout(() => {
+        announce("Your session will end in 10 seconds.")
+        if (connectedRef.current) void speakText("Your session will end in 10 seconds.")
+      }, MAX_SESSION_MS - WARN_BEFORE_MS)
+      sessionEndTimerRef.current = setTimeout(async () => {
+        console.log("[SESSION] 2-minute limit reached, ending session")
+        timeLimitEndRef.current = true
+        intentionalEndRef.current = true
+        clearSessionTimers()
+        reportSessionDuration()
+        stopSpeaking()
+        try { await conversation.endSession() } catch {}
+        setVoiceMode("idle")
+        announce("Session ended. You can start a new one anytime.")
+      }, MAX_SESSION_MS)
+      console.log(`[SESSION] timer started: ${MAX_SESSION_MS / 1000}s max`)
     },
     onDisconnect: () => {
       console.log("[navia] DISCONNECTED")
       connectedRef.current = false
       setVoiceMode("idle")
+      clearSessionTimers()
+      reportSessionDuration()
+
       if (intentionalEndRef.current) { intentionalEndRef.current = false; return }
+      // Don't auto-reconnect if session ended due to time limit
+      if (timeLimitEndRef.current) { timeLimitEndRef.current = false; return }
       if (reconnectCountRef.current < 3 && hasConnectedOnceRef.current && !sessionStartingRef.current) {
         reconnectCountRef.current++
         console.log(`[navia] auto-reconnect #${reconnectCountRef.current}`)
@@ -937,10 +990,25 @@ export default function Home() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       stream.getTracks().forEach((t) => t.stop())
 
-      await conversation.startSession({
-        agentId: process.env.NEXT_PUBLIC_ELEVENLABS_AGENT_ID ?? "",
-        connectionType: "webrtc",
-      })
+      // Fetch rate-limited signed URL from our server
+      const voiceRes = await fetch("/api/voice")
+      if (voiceRes.status === 429) {
+        const data = await voiceRes.json()
+        setVoiceMode("idle")
+        announce(data.error ?? "Session limit reached. Please try again later.")
+        return
+      }
+      if (!voiceRes.ok) {
+        setVoiceMode("idle")
+        announce("Could not start voice session.")
+        return
+      }
+
+      const { signedUrl, sessionId } = await voiceRes.json()
+      if (!signedUrl) throw new Error("No signed URL received")
+
+      sessionIdRef.current = sessionId ?? null
+      await conversation.startSession({ signedUrl })
     } catch {
       setVoiceMode("idle")
       announce("Could not connect. Check microphone.")
@@ -952,6 +1020,8 @@ export default function Home() {
   async function toggleVoice() {
     if (isConnected) {
       intentionalEndRef.current = true
+      clearSessionTimers()
+      reportSessionDuration()
       stopSpeaking()
       await conversation.endSession()
       setVoiceMode("idle")
