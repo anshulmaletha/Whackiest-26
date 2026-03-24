@@ -10,10 +10,12 @@ import ResultsList from "@/components/ResultsList"
 import SitePanel from "@/components/SitePanel"
 import DynamicIsland from "@/components/DynamicIsland"
 
-const HELP_TEXT =
-  "You can say: Search for something. Open first result. " +
-  "What is this website? Give me the phone number. What is the address? " +
-  "Read the headings. Read the links. Repeat. Go back. Next. Stop. Help."
+// ── Types ──
+
+type BrowsingMode = "home" | "searching" | "results" | "opening" | "site"
+type OfferedAction = "open_current_result" | "try_next_result" | null
+
+// ── Pure helpers (no state) ──
 
 function buildOrientation(sd: SiteData): string {
   const parts: string[] = [`This is ${sd.siteName}.`]
@@ -25,7 +27,7 @@ function buildOrientation(sd: SiteData): string {
   } else if (sd.headings && sd.headings.length > 0) {
     parts.push(`${sd.headings.length} sections. You can ask me about this page, or say go back.`)
   } else {
-    parts.push("Ask me anything about this page.")
+    parts.push("Ask me anything about this page, or say go back.")
   }
   return parts.join(" ")
 }
@@ -34,13 +36,28 @@ function describeSnippet(si: Record<string, string>): string {
   const priority = ["phone", "hours", "rating", "price", "address", "email"]
   const found = priority.filter((f) => si[f])
   if (found.length === 0) return ""
-  const labels = found.slice(0, 2).map((f) => f.replace(/_/g, " "))
-  return labels.join(" and ")
+  return found.slice(0, 2).map((f) => f.replace(/_/g, " ")).join(" and ")
 }
 
 function isStrongResult(si?: Record<string, string>): boolean {
   if (!si) return false
   return Object.keys(si).length >= 3
+}
+
+function getHelp(m: BrowsingMode): string {
+  const global = " You can always say repeat, stop, or help."
+  switch (m) {
+    case "home":
+      return "You can search for anything. For example: find me a plumber in New York, or best laptops under 1000." + global
+    case "searching":
+      return "Searching now. Please wait."
+    case "results":
+      return "Say open this one, open the second result, try the next one, go back, or search for something new." + global
+    case "opening":
+      return "Opening the page. Please wait, or say cancel."
+    case "site":
+      return "You can ask: what is the phone number, what are the hours, read the headings, summarize, or say go back." + global
+  }
 }
 
 // ── Ordinal + navigation parser ──
@@ -67,7 +84,6 @@ function parseNav(text: string): NavTarget | null {
   if (/\b(previous|prev|before|back one)\b/.test(text)) return "previous"
   if (/\b(this one|that one|current)\b/.test(text)) return "current"
   if (/\b(last|final)\b/.test(text)) return "last"
-  if (/\b(not? this|no,?\s)/i.test(text)) return "next"
   return null
 }
 
@@ -82,6 +98,7 @@ function resolveIdx(target: NavTarget, cur: number, len: number): number {
 // ── Component ──
 
 export default function Home() {
+  // ── UI state ──
   const [query, setQuery] = useState("")
   const [results, setResults] = useState<SearchResult[]>([])
   const [selectedResultId, setSelectedResultId] = useState<string | null>(null)
@@ -95,6 +112,12 @@ export default function Home() {
   const [voiceMode, setVoiceMode] = useState<"idle" | "connecting" | "listening" | "speaking">("idle")
   const [searchContext, setSearchContext] = useState<SearchContext | null>(null)
 
+  // ── Browsing mode state machine ──
+  const [mode, setMode] = useState<BrowsingMode>("home")
+  const [lastOfferedAction, setLastOfferedAction] = useState<OfferedAction>(null)
+  const [lastOrientation, setLastOrientation] = useState<string | null>(null)
+
+  // ── Refs (for async callbacks) ──
   const currentSiteRef = useRef<SiteData | null>(null)
   currentSiteRef.current = currentSite
   const resultsRef = useRef<SearchResult[]>([])
@@ -104,6 +127,15 @@ export default function Home() {
   const selectedResultIdRef = useRef<string | null>(null)
   selectedResultIdRef.current = selectedResultId
   const searchContextRef = useRef<SearchContext | null>(null)
+  const modeRef = useRef<BrowsingMode>("home")
+  modeRef.current = mode
+  const offeredActionRef = useRef<OfferedAction>(null)
+  offeredActionRef.current = lastOfferedAction
+  const lastOrientationRef = useRef<string | null>(null)
+  lastOrientationRef.current = lastOrientation
+  const focusedIndexRef = useRef(-1)
+  focusedIndexRef.current = focusedIndex
+
   const sitePanelRef = useRef<HTMLElement>(null)
   const transcriptEndRef = useRef<HTMLDivElement>(null)
   const endSessionRef = useRef<(() => Promise<void>) | null>(null)
@@ -117,7 +149,9 @@ export default function Home() {
   const turnResponseRef = useRef<string | null>(null)
   const turnPromiseRef = useRef<Promise<string> | null>(null)
   const connectedRef = useRef(false)
+  const searchPromiseRef = useRef<Promise<string> | null>(null)
 
+  // ── Noise filter ──
   const FILLER_WORDS = /^(um+|uh+|hmm*|ah+|oh+|eh+|huh|mhm|like|so|well|right|hey|hi|hello|bye|you know|i see|got it|alright|hm|ha|ho)\.?$/i
 
   function isNoise(text: string): boolean {
@@ -142,7 +176,11 @@ export default function Home() {
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [transcript])
 
-  
+  // Pre-warm API routes on page load to eliminate cold-start compilation penalty
+  useEffect(() => {
+    fetch("/api/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query: "" }) }).catch(() => {})
+    fetch("/api/site", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: "" }) }).catch(() => {})
+  }, [])
 
   // ── Keyboard ──
   useEffect(() => {
@@ -162,50 +200,76 @@ export default function Home() {
 
   // ══════════════════════════════════════════════════════════
   //  CORE ACTIONS — each returns a response string
+  //  Each action manages its own mode transitions
   // ══════════════════════════════════════════════════════════
 
   async function doSearch(q: string): Promise<string> {
-    if (isLoadingRef.current) return "Already searching."
+    // If a search is already in-flight, wait for its result instead of returning a useless "Already searching."
+    if (isLoadingRef.current && searchPromiseRef.current) {
+      console.log(`[SEARCH] joining in-flight search for "${q.slice(0, 30)}"`)
+      return await searchPromiseRef.current
+    }
     isLoadingRef.current = true
+    const t0 = performance.now()
+    setMode("searching")
+    setLastOfferedAction(null)
+    setLastOrientation(null)
     setQuery(q)
     setIsLoadingResults(true)
     setResults([])
     setCurrentSite(null)
     setSelectedResultId(null)
     setFocusedIndex(-1)
-    announce("Searching.")
 
-    try {
-      const res = await fetch("/api/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: q }),
-      })
-      const data = await res.json()
-      if (data.results?.length) {
-        setResults(data.results)
-        setFocusedIndex(0)
-        const top = data.results[0] as SearchResult
-        const si = top.snippetInfo ?? {}
-        const snippet = describeSnippet(si)
+    const searchWork = async (): Promise<string> => {
+      try {
+        const tFetch = performance.now()
+        const res = await fetch("/api/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: q }),
+        })
+        const data = await res.json()
+        console.log(`[SEARCH] fetch: ${(performance.now() - tFetch).toFixed(0)}ms`)
+        if (data.results?.length) {
+          setResults(data.results)
+          setFocusedIndex(0)
+          setMode("results")
 
-        let msg = `I found ${data.results.length} results. The first is ${top.title}.`
-        if (snippet) msg += ` I found ${snippet}.`
+          const top = data.results[0] as SearchResult
+          const si = top.snippetInfo ?? {}
+          const snippet = describeSnippet(si)
+          const source = top.source ? ` from ${top.source}` : ""
 
-        if (isStrongResult(si)) {
-          msg += " Would you like me to open it?"
-        } else {
-          msg += " You can say open this one, try the next, or open the second result."
+          let msg = `I found ${data.results.length} results. The first is ${top.title}${source}.`
+          if (snippet) msg += ` I found ${snippet}.`
+
+          if (isStrongResult(si)) {
+            msg += " Would you like me to open it?"
+          } else {
+            msg += " Say open this one, try the next, or the second result."
+          }
+          setLastOfferedAction("open_current_result")
+          console.log(`[SEARCH] ✓ SUCCESS ${(performance.now() - t0).toFixed(0)}ms: "${msg.slice(0, 100)}"`)
+          return msg
         }
-        return msg
+        console.log(`[SEARCH] ✗ NO RESULTS ${(performance.now() - t0).toFixed(0)}ms`)
+        setMode("home")
+        return "No results found. Try a different search."
+      } catch (e) {
+        console.error(`[SEARCH] ✗ ERROR ${(performance.now() - t0).toFixed(0)}ms:`, e)
+        setMode("home")
+        return "Search failed. Please try again."
+      } finally {
+        setIsLoadingResults(false)
+        isLoadingRef.current = false
+        searchPromiseRef.current = null
       }
-      return "No results found. Try a different search."
-    } catch {
-      return "Search failed. Please try again."
-    } finally {
-      setIsLoadingResults(false)
-      isLoadingRef.current = false
     }
+
+    const promise = searchWork()
+    searchPromiseRef.current = promise
+    return await promise
   }
 
   const tryOpenSite = useCallback(async (url: string, ctx: SearchContext | null): Promise<{ ok: boolean; siteData?: SiteData }> => {
@@ -226,11 +290,7 @@ export default function Home() {
   function buildSnippetSiteData(result: SearchResult): SiteData | null {
     const si = result.snippetInfo
     if (!si || Object.keys(si).length === 0) return null
-    return {
-      siteName: result.source || result.title,
-      summary: result.description,
-      keyInfo: si,
-    }
+    return { siteName: result.source || result.title, summary: result.description, keyInfo: si }
   }
 
   function enrichSiteData(siteData: SiteData, result: SearchResult): SiteData {
@@ -244,18 +304,29 @@ export default function Home() {
   }
 
   async function doOpenResult(result: SearchResult): Promise<string> {
+    const t0 = performance.now()
+    console.log(`[OPEN] ▶ opening "${result.title}" (${result.url})`)
+    setMode("opening")
+    setLastOfferedAction(null)
     setSelectedResultId(result.id)
     setIsLoadingSite(true)
     setCurrentSite(null)
     announce(`Opening ${result.title}.`)
 
+    const openPrefix = `Opening ${result.title}. `
+
+    // Check cache first (instant)
     const cached = getCachedSite(result.url)
     if (cached) {
       const enriched = enrichSiteData(cached, result)
       setCurrentSite(enriched)
       setIsLoadingSite(false)
       sitePanelRef.current?.focus()
-      return buildOrientation(enriched)
+      const orient = buildOrientation(enriched)
+      setLastOrientation(orient)
+      setMode("site")
+      console.log(`[OPEN] ✓ from cache ${(performance.now() - t0).toFixed(0)}ms`)
+      return openPrefix + orient
     }
 
     const ctx = searchContextRef.current ?? {
@@ -264,26 +335,46 @@ export default function Home() {
       category: "general",
       extractFields: ["phone", "address", "hours", "email", "price", "rating", "summary", "headings", "links"],
     }
-    const { ok, siteData } = await tryOpenSite(result.url, ctx)
-    if (ok && siteData) {
-      const enriched = enrichSiteData(siteData, result)
+
+    // Try primary site with a strict 6-second timeout
+    const OPEN_TIMEOUT = 6_000
+    let siteResult: { ok: boolean; siteData?: SiteData } = { ok: false }
+    try {
+      siteResult = await Promise.race([
+        tryOpenSite(result.url, ctx),
+        new Promise<{ ok: false }>((resolve) => setTimeout(() => resolve({ ok: false }), OPEN_TIMEOUT)),
+      ])
+    } catch { /* timeout or error */ }
+
+    if (siteResult.ok && siteResult.siteData) {
+      const enriched = enrichSiteData(siteResult.siteData, result)
       setCachedSite(result.url, enriched)
       setCurrentSite(enriched)
       setIsLoadingSite(false)
       sitePanelRef.current?.focus()
-      return buildOrientation(enriched)
+      const orient = buildOrientation(enriched)
+      setLastOrientation(orient)
+      setMode("site")
+      console.log(`[OPEN] ✓ scraped ${(performance.now() - t0).toFixed(0)}ms`)
+      return openPrefix + orient
     }
 
-    // Blocked — check snippet info first
+    console.log(`[OPEN] primary failed/timed out at ${(performance.now() - t0).toFixed(0)}ms`)
+
+    // Fall back to snippet data from search preview (instant, no network)
     const snippetData = buildSnippetSiteData(result)
     if (snippetData) {
       setCurrentSite(snippetData)
       setIsLoadingSite(false)
       const keys = Object.keys(snippetData.keyInfo)
-      return `Couldn't fully open ${result.title}, but I found ${keys.map((k) => k.replace(/_/g, " ")).join(", ")} from the search results. Ask for any of these.`
+      const orient = `I found ${keys.map((k) => k.replace(/_/g, " ")).join(", ")} from the search preview. You can ask for any of these, or say go back.`
+      setLastOrientation(orient)
+      setMode("site")
+      console.log(`[OPEN] ✓ snippet fallback ${(performance.now() - t0).toFixed(0)}ms`)
+      return `Couldn't fully load ${result.title}, but ${orient}`
     }
 
-    // Try ONE alternative only — don't iterate through all results
+    // Try ONE alternative result (strict timeout, no more)
     const remaining = resultsRef.current.filter((r) => r.id !== result.id)
     if (remaining.length > 0) {
       const alt = remaining[0]
@@ -293,20 +384,34 @@ export default function Home() {
         setSelectedResultId(alt.id)
         setCurrentSite(enriched)
         setIsLoadingSite(false)
-        return `Couldn't read ${result.title}. Trying ${alt.title}. ${buildOrientation(enriched)}`
+        const orient = buildOrientation(enriched)
+        setLastOrientation(orient)
+        setMode("site")
+        console.log(`[OPEN] ✓ alt from cache ${(performance.now() - t0).toFixed(0)}ms`)
+        return `Couldn't read ${result.title}. Opening ${alt.title} instead. ${orient}`
       }
-      const altRes = await tryOpenSite(alt.url, ctx)
-      if (altRes.ok && altRes.siteData) {
-        const enriched = enrichSiteData(altRes.siteData, alt)
-        setSelectedResultId(alt.id)
-        setCachedSite(alt.url, enriched)
-        setCurrentSite(enriched)
-        setIsLoadingSite(false)
-        return `Couldn't read ${result.title}. Trying ${alt.title}. ${buildOrientation(enriched)}`
-      }
+
+      try {
+        const altRes = await Promise.race([
+          tryOpenSite(alt.url, ctx),
+          new Promise<{ ok: false }>((resolve) => setTimeout(() => resolve({ ok: false }), OPEN_TIMEOUT)),
+        ])
+        if (altRes.ok && altRes.siteData) {
+          const enriched = enrichSiteData(altRes.siteData, alt)
+          setSelectedResultId(alt.id)
+          setCachedSite(alt.url, enriched)
+          setCurrentSite(enriched)
+          setIsLoadingSite(false)
+          const orient = buildOrientation(enriched)
+          setLastOrientation(orient)
+          setMode("site")
+          console.log(`[OPEN] ✓ alt scraped ${(performance.now() - t0).toFixed(0)}ms`)
+          return `Couldn't read ${result.title}. Opening ${alt.title} instead. ${orient}`
+        }
+      } catch { /* alt also failed */ }
     }
 
-    // Last resort: aggregate snippet info
+    // Last resort: compile all snippet info from search results
     const allSnippetInfo: Record<string, string> = {}
     for (const r of resultsRef.current) {
       if (r.snippetInfo) {
@@ -324,17 +429,22 @@ export default function Home() {
       setCurrentSite(combined)
       setIsLoadingSite(false)
       const keys = Object.keys(allSnippetInfo)
-      return `Sites are blocking access, but I found ${keys.map((k) => k.replace(/_/g, " ")).join(", ")} from the search results.`
+      const orient = `I found ${keys.map((k) => k.replace(/_/g, " ")).join(", ")} from search previews. You can ask for any of these, or say go back.`
+      setLastOrientation(orient)
+      setMode("site")
+      console.log(`[OPEN] ✓ aggregated snippets ${(performance.now() - t0).toFixed(0)}ms`)
+      return `Sites are blocking access, but ${orient}`
     }
 
     setIsLoadingSite(false)
-    return "This site isn't accessible. Try saying next to try another result."
+    setMode("results")
+    console.log(`[OPEN] ✗ all failed ${(performance.now() - t0).toFixed(0)}ms`)
+    return "This site isn't accessible. Say next to try another result."
   }
 
   async function doAskSite(question: string): Promise<string> {
     const sd = currentSiteRef.current
     if (!sd) return "No website is open."
-    announce("Checking.")
     try {
       const res = await fetch("/api/ask", {
         method: "POST",
@@ -348,156 +458,295 @@ export default function Home() {
     }
   }
 
+  function cleanQuery(raw: string): string {
+    return raw
+      .replace(/^(i want to |i need |can you |could you |please |find me |search for |look for |look up |i('m| am) looking for )/i, "")
+      .replace(/\b(please|just|actually|basically|really)\b/gi, "")
+      .replace(/\s{2,}/g, " ")
+      .trim()
+  }
+
   async function doSearchWithRefine(text: string): Promise<string> {
-    try {
-      const intentRes = await fetch("/api/intent", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          speech: text,
-          hasResults: resultsRef.current.length > 0,
-          hasSiteOpen: !!currentSiteRef.current,
-        }),
+    const cleaned = cleanQuery(text)
+    const searchQ = cleaned || text
+
+    const defaultCtx: SearchContext = {
+      intent: "search",
+      query: searchQ,
+      category: "general",
+      extractFields: ["phone", "address", "hours", "email", "price", "rating", "summary", "headings", "links"],
+    }
+    searchContextRef.current = defaultCtx
+    setSearchContext(defaultCtx)
+
+    // Fire Gemini intent in background (non-blocking) to enrich context for later site extraction
+    fetch("/api/intent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ speech: text, hasResults: false, hasSiteOpen: false }),
+    })
+      .then((r) => r.json())
+      .then(({ context }) => {
+        if (context?.category && context.category !== "general") {
+          searchContextRef.current = context
+          setSearchContext(context)
+        }
       })
-      const { context } = await intentRes.json() as { context: SearchContext }
-      if (context) {
-        searchContextRef.current = context
-        setSearchContext(context)
-      }
-      return await doSearch(context?.query || text)
-    } catch {
-      return await doSearch(text)
+      .catch(() => {})
+
+    return await doSearch(searchQ)
+  }
+
+  // ══════════════════════════════════════════════════════════
+  //  MODE-AWARE HELPERS
+  // ══════════════════════════════════════════════════════════
+
+  function describeResultAtIndex(idx: number): string {
+    const r = resultsRef.current
+    if (idx < 0 || idx >= r.length) return "No result at that position."
+    setFocusedIndex(idx)
+    setSelectedResultId(r[idx].id)
+    const si = r[idx].snippetInfo ?? {}
+    const snippet = describeSnippet(si)
+    const source = r[idx].source ? ` from ${r[idx].source}` : ""
+    let msg = `Result ${idx + 1} of ${r.length}: ${r[idx].title}${source}.`
+    if (snippet) msg += ` I found ${snippet}.`
+    if (idx < r.length - 1) {
+      msg += " Say open this one, or try the next."
+    } else {
+      msg += " Say open this one, or go back to search again."
+    }
+    setLastOfferedAction("open_current_result")
+    return msg
+  }
+
+  function describeCurrentResult(): string {
+    const r = resultsRef.current
+    if (r.length === 0) return "No results to describe."
+    const idx = Math.max(0, focusedIndexRef.current)
+    if (!r[idx]) return "No results to describe."
+    const si = r[idx].snippetInfo ?? {}
+    const snippet = describeSnippet(si)
+    const source = r[idx].source ? ` from ${r[idx].source}` : ""
+    let msg = `Result ${idx + 1} of ${r.length}: ${r[idx].title}${source}.`
+    if (snippet) msg += ` I found ${snippet}.`
+    msg += " Say open this one, or try another."
+    return msg
+  }
+
+  function advanceToNextResult(): string {
+    const r = resultsRef.current
+    if (r.length === 0) return "No results."
+    const curIdx = r.findIndex((x) => x.id === selectedResultIdRef.current)
+    const nextIdx = Math.min(curIdx + 1, r.length - 1)
+    if (nextIdx !== curIdx) return describeResultAtIndex(nextIdx)
+    return "That's the last result. Say go back to search again."
+  }
+
+  function goBackToResults(): string {
+    setCurrentSite(null)
+    setSelectedResultId(null)
+    setLastOrientation(null)
+    setLastOfferedAction(null)
+    setMode("results")
+    const r = resultsRef.current
+    if (r.length > 0) {
+      const idx = Math.max(0, focusedIndexRef.current)
+      return `Back to ${r.length} results. ` + describeResultAtIndex(idx)
+    }
+    return goBackToHome()
+  }
+
+  function goBackToHome(): string {
+    setCurrentSite(null)
+    setSelectedResultId(null)
+    setResults([])
+    setQuery("")
+    setLastOrientation(null)
+    setLastOfferedAction(null)
+    setMode("home")
+    return "Starting fresh. What would you like to search for?"
+  }
+
+  function getRepeatText(): string {
+    const m = modeRef.current
+    switch (m) {
+      case "home":
+        return "What would you like to search for?"
+      case "results":
+        return describeCurrentResult()
+      case "site":
+        return lastOrientationRef.current || lastAnswerRef.current || "No website is open."
+      default:
+        return lastAnswerRef.current || "Nothing to repeat."
     }
   }
 
   // ══════════════════════════════════════════════════════════
-  //  LOCAL COMMAND PARSER — instant, returns string or null
+  //  ROUTER — branches on mode, single decision per turn
   // ══════════════════════════════════════════════════════════
 
-  function handleLocalCommand(lower: string): string | null {
-    if (/^(help|what can i say|what are my options)\b/.test(lower)) return HELP_TEXT
-    if (/^(stop|quiet|shut up|cancel|be quiet|stop speaking)\b/.test(lower)) { stopSpeaking(); return "" }
-    if (/^(repeat|say that again|repeat that|say it again)\b/.test(lower)) return lastAnswerRef.current || "Nothing to repeat."
+  async function routeInput(text: string): Promise<string> {
+    const t0 = performance.now()
+    const lower = text.toLowerCase().trim()
+    if (!lower || lower.length < 2) return ""
+    const m = modeRef.current
 
-    if (/^(go back|back|start over|clear)\b/.test(lower)) {
-      setCurrentSite(null)
-      setSelectedResultId(null)
-      if (resultsRef.current.length > 0) return `Back to ${resultsRef.current.length} results.`
-      setResults([])
-      setQuery("")
-      return "Starting fresh. What would you like to search for?"
+    // ── Global commands (any mode) ──
+    if (/^(stop|quiet|shut up|be quiet|stop speaking)\b/.test(lower)) { stopSpeaking(); return "" }
+    if (/^(help|what can i say|what are my options)\b/.test(lower)) return getHelp(m)
+    if (/^(repeat|say that again|repeat that|say it again)\b/.test(lower)) return getRepeatText()
+    if (/^(thanks|thank you|done)\.?$/i.test(lower)) return ""
+
+    // ── Branch on mode ──
+    console.log(`[ROUTE] mode="${m}" input="${lower.slice(0, 50)}"`)
+    let result: string
+    switch (m) {
+      case "home":
+        result = await doSearchWithRefine(text); break
+      case "searching":
+        result = "Already searching. Please wait."; break
+      case "results":
+        result = await routeResults(text, lower); break
+      case "opening":
+        result = /\b(cancel|go back|back|stop)\b/.test(lower) ? goBackToResults() : "Opening a page. Please wait, or say cancel."; break
+      case "site":
+        result = await routeSite(text, lower); break
+      default:
+        result = await doSearchWithRefine(text); break
     }
 
-    if (/^(read (the )?results|list results|what are the results)\b/.test(lower)) {
-      const r = resultsRef.current
-      if (r.length === 0) return "No results yet."
+    console.log(`[ROUTE] mode=${m} ${(performance.now() - t0).toFixed(0)}ms → "${result.slice(0, 80)}"`)
+    return result
+  }
+
+  async function routeResults(text: string, lower: string): Promise<string> {
+    const r = resultsRef.current
+    console.log(`[RESULTS] routing: "${lower.slice(0, 60)}" | results=${r.length} | focused=${focusedIndexRef.current} | offered=${offeredActionRef.current}`)
+
+    // Yes/no / open via lastOfferedAction — accept multi-word affirmatives
+    // Only match if there's NO specific ordinal (first/second/third) — those go to navigation
+    const hasSpecificOrdinal = /\b(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th|next|previous)\b/i.test(lower)
+    if (!hasSpecificOrdinal && /\b(yes|yeah|yep|sure|ok(ay)?|open it|open this one|do it|go ahead|let's go|please open)\b/i.test(lower)) {
+      if (offeredActionRef.current === "open_current_result" || /\bopen\b/i.test(lower)) {
+        setLastOfferedAction(null)
+        const idx = Math.max(0, focusedIndexRef.current)
+        if (r[idx]) {
+          console.log(`[RESULTS] → open via affirmative (focused), idx=${idx}`)
+          return await doOpenResult(r[idx])
+        }
+      }
+    }
+
+    if (/\b(no|nah|nope|not this|not really|next one|try another|another one)\b/i.test(lower) && !/\b(open|first|second|third|fourth|fifth)\b/i.test(lower)) {
+      setLastOfferedAction(null)
+      console.log(`[RESULTS] → advance to next result`)
+      return advanceToNextResult()
+    }
+
+    // Go back
+    if (/\b(go back|start over|clear|new search)\b/.test(lower)) {
+      console.log(`[RESULTS] → go back to home`)
+      return goBackToHome()
+    }
+
+    // List results
+    if (/\b(read (the )?results|list results|what are the results|all results)\b/.test(lower)) {
+      if (r.length === 0) return "No results."
       return r.map((x, i) => `${i + 1}: ${x.title}`).join(". ")
     }
 
-    if (/^(read (the )?headings|what are the sections)\b/.test(lower)) {
-      const sd = currentSiteRef.current
-      if (!sd?.headings?.length) return "No headings."
-      return sd.headings.slice(0, 6).join(". ")
+    // Navigation (first/second/next/previous + optional open)
+    const nav = parseNav(lower)
+    if (nav) {
+      const curIdx = r.findIndex((x) => x.id === selectedResultIdRef.current)
+      const idx = resolveIdx(nav, curIdx, r.length)
+      const wantsOpen = nav === "current" || /\b(open|go|try|choose|select|visit|pick|switch|click)\b/.test(lower)
+      console.log(`[RESULTS] → nav: ${nav}, idx=${idx}, wantsOpen=${wantsOpen}`)
+      if (wantsOpen && r[idx]) return await doOpenResult(r[idx])
+      return describeResultAtIndex(idx)
     }
 
-    if (/^(read (the )?links|what links)\b/.test(lower)) {
-      const sd = currentSiteRef.current
-      if (!sd?.links?.length) return "No links."
-      return sd.links.slice(0, 6).map((l) => l.text).join(". ")
+    // Explicit new search
+    if (/\b(search|find|look for|look up)\b/i.test(lower)) {
+      console.log(`[RESULTS] → explicit new search`)
+      return await doSearchWithRefine(text)
     }
 
-    if (/^(what is this (website|page|site)|where am i|describe)\b/.test(lower)) {
-      const sd = currentSiteRef.current
-      return sd ? buildOrientation(sd) : "No website is open."
-    }
+    // Fallback: treat as new search
+    console.log(`[RESULTS] → FALLBACK to new search for: "${text.slice(0, 40)}"`)
+    return await doSearchWithRefine(text)
+  }
 
-    if (/^(only the important|summarize|summary|important details)\b/.test(lower)) {
-      const sd = currentSiteRef.current
-      if (!sd) return "No website is open."
-      const kv = Object.entries(sd.keyInfo ?? {}).slice(0, 5).map(([k, v]) => `${k.replace(/_/g, " ")}: ${v}`).join(". ")
-      return kv || sd.summary
-    }
+  function answerFromKeyInfo(question: string, sd: SiteData): string | null {
+    const lower = question.toLowerCase()
+    const info = sd.keyInfo ?? {}
 
-    // Thanks/done — just acknowledge
-    if (/^(thanks|thank you|done)\.?$/i.test(lower)) return ""
-
-    // "no" / "nah" — if results exist, treat as "next"; otherwise ignore
-    if (/^(no|nah|nope|not this|not really)\.?$/i.test(lower)) {
-      const r = resultsRef.current
-      if (r.length > 0 && !currentSiteRef.current) {
-        const curIdx = r.findIndex((x) => x.id === selectedResultIdRef.current)
-        const nextIdx = Math.min(curIdx + 1, r.length - 1)
-        if (nextIdx !== curIdx) {
-          setFocusedIndex(nextIdx)
-          setSelectedResultId(r[nextIdx].id)
-          const si = r[nextIdx].snippetInfo ?? {}
-          const snippet = describeSnippet(si)
-          let msg = `The next result is ${r[nextIdx].title}.`
-          if (snippet) msg += ` I found ${snippet}.`
-          msg += " You can say open this one, or try another."
-          return msg
-        }
-        return "That's the last result. You can say go back to search again."
-      }
-      return ""
-    }
+    if (/\b(phone|call|number|contact|dial)\b/.test(lower) && info.phone)
+      return `The phone number is ${info.phone}.`
+    if (/\b(address|location|where|located|directions?)\b/.test(lower) && info.address)
+      return `The address is ${info.address}.`
+    if (/\b(hours?|open|close|when|schedule|timing)\b/.test(lower) && info.hours)
+      return `The hours are ${info.hours}.`
+    if (/\b(email|e-mail|mail)\b/.test(lower) && info.email)
+      return `The email is ${info.email}.`
+    if (/\b(price|cost|how much|pricing|fee)\b/.test(lower) && info.price)
+      return `The price is ${info.price}.`
+    if (/\b(rating|review|stars?|score)\b/.test(lower) && info.rating)
+      return `The rating is ${info.rating}.`
+    if (/\b(menu|cuisine|food type)\b/.test(lower) && info.menu)
+      return `The menu includes ${info.menu}.`
+    if (/\b(services?|what do they (do|offer))\b/.test(lower) && info.services)
+      return `They offer ${info.services}.`
 
     return null
   }
 
-  // ══════════════════════════════════════════════════════════
-  //  THE ROUTER — one function, one decision, one response
-  //  Prefix with spoken acknowledgment for async operations
-  // ══════════════════════════════════════════════════════════
+  async function routeSite(text: string, lower: string): Promise<string> {
+    const sd = currentSiteRef.current
+    const SUFFIX = " You can ask for more, or say go back."
 
-  async function routeInput(text: string): Promise<string> {
-    const lower = text.toLowerCase().trim()
-    if (!lower || lower.length < 2) return ""
+    // Go back
+    if (/^(go back|back)\b/.test(lower)) return goBackToResults()
 
-    // 1. Local commands (instant, no async)
-    const cmd = handleLocalCommand(lower)
-    if (cmd !== null) return cmd
-
-    const r = resultsRef.current
-    const hasResults = r.length > 0
-    const hasSiteOpen = !!currentSiteRef.current
-
-    // 2. Affirmative responses — context-aware
-    //    "yes" / "sure" / "open it" / "do it" / "go ahead"
-    if (hasResults && !hasSiteOpen && /^(yes|yeah|yep|sure|ok(ay)?|open it|do it|go ahead|please|go for it)\.?$/i.test(lower)) {
-      const idx = Math.max(0, focusedIndex)
-      return await doOpenResult(r[idx])
+    // Headings
+    if (/^(read (the )?headings|what are the sections)\b/.test(lower)) {
+      if (!sd?.headings?.length) return "No headings on this page." + SUFFIX
+      return sd.headings.slice(0, 6).join(". ") + "." + SUFFIX
     }
 
-    // 3. Result navigation (when results exist)
-    if (hasResults) {
-      const nav = parseNav(lower)
-      if (nav) {
-        const curIdx = r.findIndex((x) => x.id === selectedResultIdRef.current)
-        const idx = resolveIdx(nav, curIdx, r.length)
-        const wantsOpen = nav === "current" || /\b(open|go|try|choose|select|visit|pick|switch|click)\b/.test(lower)
-        if (wantsOpen) {
-          return await doOpenResult(r[idx])
-        }
-        // Move focus — describe the result conversationally
-        setFocusedIndex(idx)
-        setSelectedResultId(r[idx].id)
-        const si = r[idx].snippetInfo ?? {}
-        const snippet = describeSnippet(si)
-        let msg = `Result ${idx + 1} is ${r[idx].title}.`
-        if (snippet) msg += ` I found ${snippet}.`
-        msg += " You can say open this one, or try another."
-        return msg
-      }
+    // Links
+    if (/^(read (the )?links|what links)\b/.test(lower)) {
+      if (!sd?.links?.length) return "No links on this page." + SUFFIX
+      return sd.links.slice(0, 6).map((l) => l.text).join(". ") + "." + SUFFIX
     }
 
-    // 4. If site is open and not obviously a new search → ask about site
-    if (hasSiteOpen && !/\b(search|find|look for|look up)\b/i.test(lower)) {
-      return await doAskSite(text)
+    // Orientation
+    if (/^(what is this (website|page|site)|where am i|describe)\b/.test(lower)) {
+      return sd ? buildOrientation(sd) : "No website is open."
     }
 
-    // 5. Default: search directly (skip intent refinement for speed)
-    return await doSearch(text)
+    // Summarize / read everything
+    if (/^(only the important|summarize|summary|important details|read everything|tell me everything)\b/.test(lower)) {
+      if (!sd) return "No website is open."
+      const kv = Object.entries(sd.keyInfo ?? {}).slice(0, 5).map(([k, v]) => `${k.replace(/_/g, " ")}: ${v}`).join(". ")
+      return (kv || sd.summary) + SUFFIX
+    }
+
+    // Local keyInfo Q&A — instant, no Gemini needed
+    if (sd) {
+      const local = answerFromKeyInfo(lower, sd)
+      if (local) return local + SUFFIX
+    }
+
+    // New search (explicit keywords)
+    if (/\b(search|find|look for|look up)\b/i.test(lower)) {
+      return await doSearchWithRefine(text)
+    }
+
+    // Fall back to Gemini Q&A only if no local answer
+    const answer = await doAskSite(text)
+    return answer + SUFFIX
   }
 
   routeInputRef.current = routeInput
@@ -516,32 +765,57 @@ export default function Home() {
   }
 
   async function precompute(text: string, turnId: number) {
+    const t0 = performance.now()
+    console.log(`[PRECOMPUTE] ▶ turn=${turnId} text="${text.slice(0, 50)}"`)
     const promise = routeInputRef.current(text)
-      .catch(() => "Something went wrong. Try again.")
+      .catch((e) => { console.error("[PRECOMPUTE] caught error:", e); return "Something went wrong. Try again." })
     turnPromiseRef.current = promise
     const response = await promise
     if (turnId === turnIdRef.current) turnResponseRef.current = response
+    console.log(`[PRECOMPUTE] ◀ turn=${turnId} ${(performance.now() - t0).toFixed(0)}ms result="${response.slice(0, 80)}"`)
     return response
   }
 
-  const TOOL_TIMEOUT_MS = 4_500
+  const TOOL_TIMEOUT_MS = 3_000
 
-  async function toolHandler(toolName: string): Promise<string> {
-    const pending = turnPromiseRef.current
-    if (!pending) {
-      await new Promise((r) => setTimeout(r, 300))
-      const p2 = turnPromiseRef.current
-      if (!p2) {
-        const cached = turnResponseRef.current || "What would you like to do?"
-        showResponse(cached)
-        return cached
-      }
-      return awaitWithTimeout(p2)
+  async function toolHandler(toolName: string, paramText?: string): Promise<string> {
+    const t0 = performance.now()
+    const ms = () => `${(performance.now() - t0).toFixed(0)}ms`
+
+    console.log(`[TOOL] ▶ ${toolName} | param="${paramText?.slice(0, 40) ?? "NONE"}" | hasPending=${!!turnPromiseRef.current} | hasResponse=${turnResponseRef.current !== null}`)
+
+    // 1. If precompute already finished, return the cached result immediately
+    if (turnResponseRef.current) {
+      const cached = turnResponseRef.current
+      showResponse(cached)
+      console.log(`[TOOL] ◀ FINAL RETURN (pre-cached) ${ms()}: "${cached.slice(0, 100)}"`)
+      return cached || "OK."
     }
-    return awaitWithTimeout(pending)
-  }
 
-  async function awaitWithTimeout(pending: Promise<string>): Promise<string> {
+    // 2. If no pending computation, start one now
+    if (!turnPromiseRef.current) {
+      if (paramText) {
+        console.log(`[TOOL] no pending promise — starting precompute from tool call`)
+        void precompute(paramText, turnIdRef.current)
+      } else {
+        // No pending AND no param text: onMessage may fire shortly. Wait a beat.
+        console.log(`[TOOL] no pending, no param — waiting 300ms for onMessage`)
+        await new Promise((r) => setTimeout(r, 300))
+        if (turnResponseRef.current) {
+          const cached = turnResponseRef.current
+          showResponse(cached)
+          console.log(`[TOOL] ◀ FINAL RETURN (after wait) ${ms()}: "${cached.slice(0, 100)}"`)
+          return cached || "OK."
+        }
+        if (!turnPromiseRef.current) {
+          console.warn(`[TOOL] ◀ FINAL RETURN (no-input) ${ms()}: nothing to process`)
+          return "I'm listening. What would you like to do?"
+        }
+      }
+    }
+
+    // 3. Await the pending promise with timeout
+    const pending = turnPromiseRef.current!
     let timedOut = false
     const result = await Promise.race([
       pending,
@@ -550,25 +824,39 @@ export default function Home() {
       ),
     ])
 
-    if (result && !timedOut) {
+    // result can be "" (empty string from stop/thanks commands) — that's valid, not a failure
+    if (result !== null && result !== undefined && !timedOut) {
       showResponse(result)
-      return result
+      const final = result || "OK."
+      console.log(`[TOOL] ◀ FINAL RETURN (success) ${ms()}: "${final.slice(0, 100)}"`)
+      return final
     }
 
-    pending.then((response) => {
+    // Timeout — search is still running. Return ack, deliver result when ready.
+    const ack = paramText
+      ? `Searching for ${paramText.slice(0, 40)}. One moment please.`
+      : "Searching. One moment please."
+    console.warn(`[TOOL] ◀ FINAL RETURN (timeout) ${ms()} > ${TOOL_TIMEOUT_MS}ms. Returning ack: "${ack}"`)
+
+    pending.then(async (response) => {
       if (!response) return
+      console.log(`[TOOL] LATE response at +${ms()}: "${response.slice(0, 80)}"`)
       showResponse(response)
-      if (connectedRef.current) void speakText(response)
+      // Wait 2s for the agent to finish speaking the ack before delivering late results
+      await new Promise((r) => setTimeout(r, 2000))
+      console.log(`[TOOL] delivering late result via browser TTS`)
+      void speakText(response)
     })
-    return "One moment please."
+
+    return ack
   }
 
   const conversation = useConversation({
     clientTools: {
-      handle_input: async () => toolHandler("handle_input"),
-      search_web: async () => toolHandler("search_web"),
+      handle_input: async (params: { text?: string }) => toolHandler("handle_input", params.text),
+      search_web: async (params: { query?: string }) => toolHandler("search_web", params.query),
       open_result: async () => toolHandler("open_result"),
-      ask_site: async () => toolHandler("ask_site"),
+      ask_site: async (params: { question?: string }) => toolHandler("ask_site", params.question),
     },
     onConnect: () => {
       console.log("[navia] CONNECTED")
@@ -589,17 +877,17 @@ export default function Home() {
         setTimeout(() => startSession(), 1500)
       }
     },
-    onModeChange: ({ mode }) => {
-      console.log(`[navia] MODE: ${mode}`)
-      if (mode === "speaking") setVoiceMode("speaking")
-      else if (mode === "listening") setVoiceMode("listening")
+    onModeChange: ({ mode: m }) => {
+      console.log(`[navia] VOICE MODE: ${m}`)
+      if (m === "speaking") setVoiceMode("speaking")
+      else if (m === "listening") setVoiceMode("listening")
     },
     onMessage: (msg) => {
       try {
-        console.log(`[navia] MESSAGE: source=${msg?.source}, text="${msg?.message?.slice(0, 80)}"`)
         if (msg?.source === "user" && msg?.message) {
           const text = msg.message
-          if (isNoise(text)) { console.log("[navia] filtered as noise"); return }
+          console.log(`[MSG] USER: "${text}"`)
+          if (isNoise(text)) { console.log("[MSG] filtered as noise"); return }
 
           turnIdRef.current += 1
           const turnId = turnIdRef.current
@@ -607,13 +895,13 @@ export default function Home() {
           turnPromiseRef.current = null
 
           addToTranscript("user", text)
-          console.log(`[navia] precomputing turn ${turnId}: "${text}"`)
+          console.log(`[MSG] starting precompute turn ${turnId}`)
           void precompute(text, turnId)
         }
         if (msg?.source === "ai" && msg?.message) {
-          console.log(`[navia] AGENT SAID: "${msg.message}"`)
+          console.log(`[MSG] AGENT SPEAKS: "${msg.message.slice(0, 100)}"`)
         }
-      } catch (e) { console.error("[navia] onMessage error:", e) }
+      } catch (e) { console.error("[MSG] onMessage error:", e) }
     },
     onError: (err) => console.error("[navia] ERROR:", err),
     onUnhandledClientToolCall: (p) => console.warn("[navia] UNHANDLED TOOL:", JSON.stringify(p)),
@@ -660,7 +948,6 @@ export default function Home() {
     }
   }
 
-  // ── Typed search (from search bar) — browser TTS only when no session ──
   const handleTypedSearch = useCallback(async (q: string) => {
     addToTranscript("user", q)
     const response = await doSearchWithRefine(q)
@@ -669,7 +956,6 @@ export default function Home() {
     if (!connectedRef.current) void speakText(response)
   }, [])
 
-  // ── Clicked result (from UI) — browser TTS only when no session ──
   const handleClickResult = useCallback(async (result: SearchResult) => {
     const response = await doOpenResult(result)
     addToTranscript("assistant", response)
@@ -717,7 +1003,11 @@ export default function Home() {
           <SitePanel
             siteData={currentSite}
             isLoading={isLoadingSite}
-            onQuickAction={(q) => doAskSite(q).then((a) => { addToTranscript("assistant", a); announce(a) })}
+            onQuickAction={(q) => doAskSite(q).then((a) => {
+              const full = a + " You can ask for more, or say go back."
+              addToTranscript("assistant", full)
+              announce(full)
+            })}
             category={searchContext?.category}
           />
         </section>
@@ -749,6 +1039,9 @@ export default function Home() {
         isConnecting={voiceMode === "connecting"}
         lastAnswer={lastAnswer}
         onMicClick={toggleVoice}
+        browsingMode={mode}
+        resultCount={results.length}
+        siteName={currentSite?.siteName ?? null}
       />
     </div>
   )

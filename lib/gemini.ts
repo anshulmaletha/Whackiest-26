@@ -12,7 +12,7 @@ function isRateLimited(): boolean {
   return Date.now() < rateLimitedUntil
 }
 
-function markRateLimited(retryAfterSec = 30) {
+function markRateLimited(retryAfterSec = 15) {
   rateLimitedUntil = Date.now() + retryAfterSec * 1000
   console.warn(`[gemini] rate-limited, skipping calls for ${retryAfterSec}s`)
 }

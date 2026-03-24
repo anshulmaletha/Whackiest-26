@@ -5,6 +5,8 @@ import type { TranscriptItem } from "@/types"
 
 type VisualState = "idle" | "connecting" | "listening" | "speaking" | "expanded"
 
+type BrowsingMode = "home" | "searching" | "results" | "opening" | "site"
+
 interface Props {
   transcript: TranscriptItem[]
   isListening: boolean
@@ -13,6 +15,19 @@ interface Props {
   isConnecting?: boolean
   lastAnswer: string | null
   onMicClick: () => void
+  browsingMode?: BrowsingMode
+  resultCount?: number
+  siteName?: string | null
+}
+
+function getModeLabel(mode: BrowsingMode, resultCount: number, siteName: string | null): string {
+  switch (mode) {
+    case "home": return "Ready"
+    case "searching": return "Searching…"
+    case "results": return `${resultCount} result${resultCount !== 1 ? "s" : ""}`
+    case "opening": return "Opening…"
+    case "site": return siteName || "Browsing"
+  }
 }
 
 export default function DynamicIsland({
@@ -23,6 +38,9 @@ export default function DynamicIsland({
   isConnecting,
   lastAnswer,
   onMicClick,
+  browsingMode = "home",
+  resultCount = 0,
+  siteName = null,
 }: Props) {
   const [isExpanded, setIsExpanded] = useState(false)
   const [flashAnswer, setFlashAnswer] = useState(false)
@@ -138,7 +156,10 @@ export default function DynamicIsland({
             <div className="di-left">
               <div className="di-pulse-ring" aria-hidden="true" />
               <WaveformBars count={5} variant="green" />
-              <span className="di-state-label">Listening…</span>
+              <span className="di-state-label">Listening</span>
+              <span className="di-mode-badge" aria-label={`Current mode: ${getModeLabel(browsingMode, resultCount, siteName)}`}>
+                {getModeLabel(browsingMode, resultCount, siteName)}
+              </span>
             </div>
             <button
               className="di-close"
@@ -154,7 +175,10 @@ export default function DynamicIsland({
           <div className="di-row di-row--between">
             <div className="di-left">
               <WaveformBars count={9} variant="accent" />
-              <span className="di-state-label di-state-label--accent">Navia is speaking</span>
+              <span className="di-state-label di-state-label--accent">Speaking</span>
+              <span className="di-mode-badge" aria-label={`Current mode: ${getModeLabel(browsingMode, resultCount, siteName)}`}>
+                {getModeLabel(browsingMode, resultCount, siteName)}
+              </span>
             </div>
             <button
               className="di-close"

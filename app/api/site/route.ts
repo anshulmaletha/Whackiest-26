@@ -3,6 +3,7 @@ import { scrapeUrl } from "@/lib/firecrawl"
 import { extractSite } from "@/lib/gemini"
 import { isBlockedPage } from "@/lib/blocked"
 import { getSearchMarkdown } from "@/lib/markdown-cache"
+import { extractFromSnippet, snippetInfoToRecord } from "@/lib/snippet-extract"
 import type { SearchContext } from "@/types"
 
 const DEFAULT_CONTEXT: SearchContext = {
@@ -38,6 +39,36 @@ function cleanMarkdown(md: string): string {
     .slice(0, 8000)
 }
 
+function extractHeadingsBasic(md: string): string[] {
+  const headings: string[] = []
+  for (const line of md.split("\n")) {
+    const m = line.match(/^#{1,3}\s+(.+)$/)
+    if (m && m[1].length > 2 && m[1].length < 100) {
+      headings.push(m[1].replace(/[*_`\[\]()]/g, "").trim())
+      if (headings.length >= 10) break
+    }
+  }
+  return headings
+}
+
+function extractLinksBasic(md: string): { text: string; href: string }[] {
+  const links: { text: string; href: string }[] = []
+  const re = /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(md)) !== null) {
+    const text = m[1].trim()
+    if (text.length > 2 && text.length < 80) {
+      links.push({ text, href: m[2] })
+      if (links.length >= 12) break
+    }
+  }
+  return links
+}
+
+function safeHostname(url: string): string {
+  try { return new URL(url).hostname.replace(/^www\./, "") } catch { return url }
+}
+
 export async function POST(req: NextRequest) {
   try {
     const { url, context } = await req.json() as {
@@ -49,7 +80,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "url is required" }, { status: 400 })
     }
 
-    // Check server-side cache first — skip Firecrawl scrape if we have it from search
     let markdown = ""
     let cachedSnippetInfo: Record<string, string> = {}
     const cached = getSearchMarkdown(url)
@@ -73,30 +103,49 @@ export async function POST(req: NextRequest) {
     }
 
     const telNumbers = extractTelNumbers(markdown)
-
-    const ctx = context ?? DEFAULT_CONTEXT
     const cleaned = cleanMarkdown(markdown)
-    const siteData = await extractSite(cleaned, url, ctx)
+    const ctx = context ?? DEFAULT_CONTEXT
+    const hostname = safeHostname(url)
 
-    // Inject tel: phone numbers if Gemini missed them
-    if (telNumbers.length > 0 && !siteData.keyInfo.phone) {
-      siteData.keyInfo.phone = telNumbers[0]
+    // PRIMARY: Regex extraction on full markdown (always works, no API needed)
+    const regexInfo = snippetInfoToRecord(extractFromSnippet(markdown.slice(0, 5000)))
+    if (telNumbers.length > 0 && !regexInfo.phone) {
+      regexInfo.phone = telNumbers[0]
     }
 
-    // Merge in cached snippetInfo from search enrichment (fill gaps)
-    for (const [k, v] of Object.entries(cachedSnippetInfo)) {
-      if (!siteData.keyInfo[k] && v) {
-        siteData.keyInfo[k] = v
-      }
+    // Build a solid base from regex + basic parsing
+    const baseData = {
+      siteName: hostname,
+      summary: cleaned.slice(0, 200).replace(/\n/g, " ").trim() || "No description.",
+      keyInfo: { ...regexInfo, ...cachedSnippetInfo },
+      headings: extractHeadingsBasic(markdown),
+      links: extractLinksBasic(markdown),
     }
 
-    return NextResponse.json({
-      siteData: {
-        ...siteData,
-        extractedText: cleaned,
-      },
-      blocked: false,
-    })
+    // ENHANCEMENT: Try Gemini extraction (may fail if quota exhausted)
+    const geminiData = await extractSite(cleaned, url, ctx)
+
+    // Merge: Gemini wins for siteName and summary, regex wins for keyInfo fields
+    const mergedKeyInfo = { ...baseData.keyInfo }
+    for (const [k, v] of Object.entries(geminiData.keyInfo)) {
+      if (v && v.length > 0) mergedKeyInfo[k] = v
+    }
+    // Re-apply regex for high-confidence fields (regex > Gemini for phone/email)
+    if (regexInfo.phone) mergedKeyInfo.phone = regexInfo.phone
+    if (regexInfo.email) mergedKeyInfo.email = regexInfo.email
+
+    const finalData = {
+      siteName: geminiData.siteName !== hostname ? geminiData.siteName : baseData.siteName,
+      summary: geminiData.summary !== baseData.summary && geminiData.summary.length > 10
+        ? geminiData.summary
+        : baseData.summary,
+      keyInfo: mergedKeyInfo,
+      headings: geminiData.headings.length > 0 ? geminiData.headings : baseData.headings,
+      links: geminiData.links.length > 0 ? geminiData.links : baseData.links,
+      extractedText: cleaned,
+    }
+
+    return NextResponse.json({ siteData: finalData, blocked: false })
   } catch (err) {
     console.error("[/api/site]", err)
     return NextResponse.json(
