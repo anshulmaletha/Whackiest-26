@@ -782,39 +782,48 @@ export default function Home() {
     const t0 = performance.now()
     const ms = () => `${(performance.now() - t0).toFixed(0)}ms`
 
-    console.log(`[TOOL] ▶ ${toolName} | param="${paramText?.slice(0, 40) ?? "NONE"}" | hasPending=${!!turnPromiseRef.current} | hasResponse=${turnResponseRef.current !== null}`)
+    console.log(`[TOOL] ▶ ${toolName} | param="${paramText?.slice(0, 50) ?? "NONE"}" | hasPending=${!!turnPromiseRef.current} | hasResponse=${turnResponseRef.current !== null} | turnId=${turnIdRef.current}`)
 
-    // 1. If precompute already finished, return the cached result immediately
-    if (turnResponseRef.current) {
+    // CRITICAL: If tool provides new input text, we must compute fresh.
+    // The cached turnResponseRef might be STALE from a previous turn
+    // (handle_input can fire BEFORE onMessage clears the old response).
+    if (paramText) {
+      // Always start a fresh computation for the provided text
+      turnIdRef.current += 1
+      const turnId = turnIdRef.current
+      turnResponseRef.current = null
+      turnPromiseRef.current = null
+      console.log(`[TOOL] fresh compute from tool param, turn=${turnId}`)
+      void precompute(paramText, turnId)
+    }
+
+    // If no paramText AND precompute already finished (onMessage path), return it
+    if (!paramText && turnResponseRef.current) {
       const cached = turnResponseRef.current
+      turnResponseRef.current = null
       showResponse(cached)
       console.log(`[TOOL] ◀ FINAL RETURN (pre-cached) ${ms()}: "${cached.slice(0, 100)}"`)
       return cached || "OK."
     }
 
-    // 2. If no pending computation, start one now
+    // If nothing pending and no param, wait briefly for onMessage to fire
     if (!turnPromiseRef.current) {
-      if (paramText) {
-        console.log(`[TOOL] no pending promise — starting precompute from tool call`)
-        void precompute(paramText, turnIdRef.current)
-      } else {
-        // No pending AND no param text: onMessage may fire shortly. Wait a beat.
-        console.log(`[TOOL] no pending, no param — waiting 300ms for onMessage`)
-        await new Promise((r) => setTimeout(r, 300))
-        if (turnResponseRef.current) {
-          const cached = turnResponseRef.current
-          showResponse(cached)
-          console.log(`[TOOL] ◀ FINAL RETURN (after wait) ${ms()}: "${cached.slice(0, 100)}"`)
-          return cached || "OK."
-        }
-        if (!turnPromiseRef.current) {
-          console.warn(`[TOOL] ◀ FINAL RETURN (no-input) ${ms()}: nothing to process`)
-          return "I'm listening. What would you like to do?"
-        }
+      console.log(`[TOOL] no pending, no param — waiting 300ms for onMessage`)
+      await new Promise((r) => setTimeout(r, 300))
+      if (turnResponseRef.current) {
+        const cached = turnResponseRef.current
+        turnResponseRef.current = null
+        showResponse(cached)
+        console.log(`[TOOL] ◀ FINAL RETURN (after wait) ${ms()}: "${cached.slice(0, 100)}"`)
+        return cached || "OK."
+      }
+      if (!turnPromiseRef.current) {
+        console.warn(`[TOOL] ◀ FINAL RETURN (no-input) ${ms()}: nothing to process`)
+        return "I'm listening. What would you like to do?"
       }
     }
 
-    // 3. Await the pending promise with timeout
+    // Await the pending promise with timeout
     const pending = turnPromiseRef.current!
     let timedOut = false
     const result = await Promise.race([
@@ -824,7 +833,6 @@ export default function Home() {
       ),
     ])
 
-    // result can be "" (empty string from stop/thanks commands) — that's valid, not a failure
     if (result !== null && result !== undefined && !timedOut) {
       showResponse(result)
       const final = result || "OK."
@@ -832,17 +840,16 @@ export default function Home() {
       return final
     }
 
-    // Timeout — search is still running. Return ack, deliver result when ready.
+    // Timeout — still running. Return ack, deliver result when ready.
     const ack = paramText
-      ? `Searching for ${paramText.slice(0, 40)}. One moment please.`
-      : "Searching. One moment please."
+      ? `Working on it. One moment please.`
+      : "One moment please."
     console.warn(`[TOOL] ◀ FINAL RETURN (timeout) ${ms()} > ${TOOL_TIMEOUT_MS}ms. Returning ack: "${ack}"`)
 
     pending.then(async (response) => {
       if (!response) return
       console.log(`[TOOL] LATE response at +${ms()}: "${response.slice(0, 80)}"`)
       showResponse(response)
-      // Wait 2s for the agent to finish speaking the ack before delivering late results
       await new Promise((r) => setTimeout(r, 2000))
       console.log(`[TOOL] delivering late result via browser TTS`)
       void speakText(response)
@@ -886,8 +893,15 @@ export default function Home() {
       try {
         if (msg?.source === "user" && msg?.message) {
           const text = msg.message
-          console.log(`[MSG] USER: "${text}"`)
+          console.log(`[MSG] USER: "${text}" | currentTurn=${turnIdRef.current} | hasPending=${!!turnPromiseRef.current}`)
           if (isNoise(text)) { console.log("[MSG] filtered as noise"); return }
+
+          // If toolHandler already started a fresh precompute for this text, don't duplicate
+          if (turnPromiseRef.current) {
+            console.log(`[MSG] precompute already running for turn ${turnIdRef.current}, skipping duplicate`)
+            addToTranscript("user", text)
+            return
+          }
 
           turnIdRef.current += 1
           const turnId = turnIdRef.current
