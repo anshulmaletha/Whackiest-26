@@ -392,10 +392,16 @@ a { text-decoration: none; color: inherit; }
   box-shadow: 0 4px 16px rgba(43,24,10,0.18);
 }
 
-.result-card--selected .result-card__type,
+.result-card--selected .result-card__type {
+  color: var(--white) !important;
+  background: rgba(255,255,255,0.18) !important;
+}
 .result-card--selected .result-card__source,
 .result-card--selected .result-card__desc {
   color: rgba(255,255,255,0.65) !important;
+}
+.result-card--selected .result-card__id {
+  color: rgba(255,255,255,0.7) !important;
 }
 
 .result-card--selected .result-card__btn {
