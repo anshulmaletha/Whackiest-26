@@ -1101,7 +1101,7 @@ export default function Home() {
                   <span className="onboarding__step-num">2</span>
                   <div>
                     <strong>Speak naturally</strong>
-                    <p>&quot;Find a plumber in New York&quot; or &quot;Best pizza near me&quot;</p>
+                    <p>&quot;Find a plumber in New York&quot; or &quot;Best pizza in NYC&quot;</p>
                   </div>
                 </div>
                 <div className="onboarding__step">
