@@ -98,6 +98,20 @@ function resolveIdx(target: NavTarget, cur: number, len: number): number {
 // ── Component ──
 
 export default function Home() {
+  // ── Onboarding ──
+  const [showOnboarding, setShowOnboarding] = useState(false)
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && !localStorage.getItem("navia_onboarded")) {
+      setShowOnboarding(true)
+    }
+  }, [])
+
+  function dismissOnboarding() {
+    setShowOnboarding(false)
+    localStorage.setItem("navia_onboarded", "1")
+  }
+
   // ── UI state ──
   const [query, setQuery] = useState("")
   const [results, setResults] = useState<SearchResult[]>([])
@@ -1059,6 +1073,94 @@ export default function Home() {
       <div className="sr-only" role="status" aria-live="assertive" aria-atomic="true">
         {announcement}
       </div>
+
+      {showOnboarding && (
+        <div className="onboarding-overlay" role="dialog" aria-modal="true" aria-label="Welcome to Navia">
+          <div className="onboarding">
+            <div className="onboarding__header">
+              <span className="onboarding__logo">Navia</span>
+              <span className="onboarding__badge">Voice Browser</span>
+            </div>
+
+            <h2 className="onboarding__title">Welcome to Navia</h2>
+            <p className="onboarding__subtitle">
+              A voice-first web assistant for blind and low-vision users. Search, understand, and use any website — entirely by voice.
+            </p>
+
+            <div className="onboarding__section">
+              <h3 className="onboarding__section-title">How to use</h3>
+              <div className="onboarding__steps">
+                <div className="onboarding__step">
+                  <span className="onboarding__step-num">1</span>
+                  <div>
+                    <strong>Tap the microphone</strong>
+                    <p>Or press the mic button to start a voice session.</p>
+                  </div>
+                </div>
+                <div className="onboarding__step">
+                  <span className="onboarding__step-num">2</span>
+                  <div>
+                    <strong>Speak naturally</strong>
+                    <p>&quot;Find a plumber in New York&quot; or &quot;Best pizza near me&quot;</p>
+                  </div>
+                </div>
+                <div className="onboarding__step">
+                  <span className="onboarding__step-num">3</span>
+                  <div>
+                    <strong>Browse by voice</strong>
+                    <p>&quot;Open the first one&quot;, &quot;What&apos;s the phone number?&quot;, &quot;Go back&quot;</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="onboarding__section">
+              <h3 className="onboarding__section-title">Voice commands</h3>
+              <div className="onboarding__commands">
+                <kbd>Open this one</kbd>
+                <kbd>Next result</kbd>
+                <kbd>Go back</kbd>
+                <kbd>Phone number?</kbd>
+                <kbd>Hours?</kbd>
+                <kbd>Repeat</kbd>
+                <kbd>Help</kbd>
+                <kbd>Stop</kbd>
+              </div>
+            </div>
+
+            <div className="onboarding__section">
+              <h3 className="onboarding__section-title">Accessibility</h3>
+              <div className="onboarding__a11y">
+                <div className="onboarding__a11y-item">
+                  <kbd>/</kbd>
+                  <span>Jump to search</span>
+                </div>
+                <div className="onboarding__a11y-item">
+                  <kbd>Tab</kbd>
+                  <span>Navigate between elements</span>
+                </div>
+                <div className="onboarding__a11y-item">
+                  <kbd>Esc</kbd>
+                  <span>Go back from site panel</span>
+                </div>
+                <div className="onboarding__a11y-item">
+                  <span className="onboarding__icon" aria-hidden="true">🔊</span>
+                  <span>All actions are announced by voice</span>
+                </div>
+                <div className="onboarding__a11y-item">
+                  <span className="onboarding__icon" aria-hidden="true">⏱</span>
+                  <span>Sessions are limited to 2 minutes each</span>
+                </div>
+              </div>
+            </div>
+
+            <button className="onboarding__cta" onClick={dismissOnboarding} autoFocus>
+              Start using Navia
+            </button>
+            <p className="onboarding__hint">You can also type your search in the search bar</p>
+          </div>
+        </div>
+      )}
 
       <header className="nav" role="banner">
         <span className="nav__logo">Navia</span>
