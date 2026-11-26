@@ -1,0 +1,143 @@
+@import "tailwindcss";
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   WAYFINDER — Centralized Design System Tokens & Base Foundation
+   Consume via CSS custom properties (--color-*, --text-*, --space-*,
+   --radius-*, --shadow-*, --motion-*, --focus-*) across all components.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* Colors (WCAG AA >= 4.5:1 text contrast on surface/bg) */
+  --color-bg: #faf9f7;
+  --color-surface: #ffffff;
+  --color-text-primary: #0d0d0d;
+  --color-text-secondary: #4b5563;
+  --color-accent: #2b180a;
+  --color-success: #15803d;
+  --color-warning: #b45309;
+  --color-error: #b91c1c;
+  --color-focus: #2b180a;
+  --color-border: rgba(13, 13, 13, 0.14);
+  --color-border-strong: rgba(13, 13, 13, 0.42);
+
+  /* Typography */
+  --text-hero-size: clamp(2.25rem, 6vw, 3.375rem);
+  --text-hero-weight: 400;
+  --text-hero-line-height: 1.12;
+  --text-heading-size: clamp(1.375rem, 3.2vw, 1.75rem);
+  --text-heading-sm: 1.125rem;
+  --text-heading-weight: 400;
+  --text-route-size: 1.25rem;
+  --text-support-size: 1rem;
+  --text-support-weight: 400;
+  --text-support-line-height: 1.55;
+  --text-state-size: 0.9375rem;
+  --text-state-weight: 500;
+  --text-button-size: 0.9375rem;
+  --text-button-weight: 600;
+  --text-meta-size: 0.8125rem;
+  --text-meta-weight: 500;
+
+  /* Spacing Scale */
+  --space-4: 4px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-20: 20px;
+  --space-24: 24px;
+  --space-32: 32px;
+  --space-48: 48px;
+
+  /* Radius */
+  --radius-button: 12px;
+  --radius-card: 16px;
+  --radius-chip: 999px;
+  --radius-orb: 50%;
+
+  /* Shadows */
+  --shadow-card: 0 2px 12px rgba(13, 13, 13, 0.06);
+  --shadow-orb: 0 4px 20px rgba(13, 13, 13, 0.08);
+
+  /* Motion */
+  --motion-fast: 150ms;
+  --motion-base: 240ms;
+  --motion-slow: 4s;
+  --ease-standard: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* Focus */
+  --focus-ring: var(--color-focus);
+  --focus-width: 2.5px;
+  --focus-offset: 2px;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-sans, system-ui, sans-serif);
+  background: var(--color-bg);
+  color: var(--color-text-primary);
+  line-height: 1.5;
+  min-height: 100dvh;
+}
+
+a {
+  text-decoration: none;
+  color: inherit;
+}
+
+.sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+.skip-link {
+  position: absolute;
+  top: -100px;
+  left: var(--space-16);
+  z-index: 10000;
+  padding: var(--space-8) var(--space-16);
+  background: var(--color-text-primary);
+  color: var(--color-surface);
+  font-size: var(--text-meta-size);
+  font-weight: var(--text-button-weight);
+  border-radius: var(--radius-button);
+}
+
+.skip-link:focus {
+  top: 8px;
+  outline: var(--focus-width, 2.5px) solid var(--focus-ring, var(--color-focus, #2b180a));
+  outline-offset: var(--focus-offset, 2px);
+}
+
+*:focus-visible {
+  outline: var(--focus-width, 2.5px) solid var(--focus-ring, var(--color-focus, #2b180a));
+  outline-offset: var(--focus-offset, 2px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto !important;
+  }
+
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
