@@ -1,9 +1,16 @@
 import type { ReactNode } from "react"
+import type { ErrorSituation, WayfinderDestination } from "@/types/wayfinder"
 import ApplicationShell, { type WayfinderState as ShellStatus } from "./ApplicationShell"
+import ErrorView from "./ErrorView"
 import InitialScreen from "./InitialScreen"
+import NavigationProgressTrack from "./NavigationProgressTrack"
 import ReadyScreen, { ReadyHeader } from "./ReadyScreen"
+import RouteCard from "./RouteCard"
+import SuccessView from "./SuccessView"
 import VoiceOrb from "./VoiceOrb"
 import styles from "./WayfinderView.module.css"
+
+const noop = () => {}
 
 export type WayfinderUIState =
   | "INITIAL"
@@ -28,6 +35,8 @@ export interface WayfinderViewData {
   heardText?: string
   /** Navigation duration in ms supplied by backend /api/open */
   elapsedMs?: number
+  /** Error category for Saurabh's ErrorView */
+  errorSituation?: ErrorSituation
   /** Human-readable error message supplied by parent/state layer */
   errorMessage?: string
 }
@@ -157,8 +166,14 @@ export default function WayfinderView({
     )
   }
 
+  const destination: WayfinderDestination = {
+    id: data?.destinationId ?? "destination",
+    label: data?.destinationName ?? "Selected destination",
+    host: data?.destinationHost ?? data?.destinationUrl ?? "website",
+    url: data?.destinationUrl,
+  }
+
   if (state === "CONFIRMATION") {
-    const destinationLabel = data?.destinationName ?? "Selected destination"
     return (
       <ApplicationShell
         status={shellStatus}
@@ -170,39 +185,12 @@ export default function WayfinderView({
         orbSlot={<VoiceOrb state="idle" interactive={false} />}
         routeCardSlot={
           slots?.confirmationSlot ?? (
-            <section
-              className={styles.stateCard}
-              aria-label="Route confirmation"
-            >
-              <div className={styles.cardBody}>
-                <span className={styles.cardEyebrow}>Destination</span>
-                <p className={styles.destinationName}>{destinationLabel}</p>
-                {data?.destinationUrl && (
-                  <p className={styles.destinationUrl}>{data.destinationUrl}</p>
-                )}
-                {data?.heardText && (
-                  <p className={styles.heardText}>
-                    Heard: &ldquo;{data.heardText}&rdquo;
-                  </p>
-                )}
-              </div>
-              <div className={styles.actionsRow}>
-                <button
-                  type="button"
-                  className={styles.secondaryButton}
-                  onClick={intents?.onCancel}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className={styles.primaryButton}
-                  onClick={intents?.onConfirm}
-                >
-                  Go now
-                </button>
-              </div>
-            </section>
+            <RouteCard
+              destination={destination}
+              heardUtterance={data?.heardText ?? ""}
+              onConfirm={intents?.onConfirm ?? noop}
+              onCancel={intents?.onCancel ?? noop}
+            />
           )
         }
       />
@@ -218,14 +206,12 @@ export default function WayfinderView({
         routeCardSlot={
           slots?.navigatingSlot ?? (
             <div className={styles.statePanel}>
+              <NavigationProgressTrack currentStep="opening" />
               <p className={styles.stateBody}>
                 {data?.destinationName
                   ? `Opening ${data.destinationName} once...`
                   : "Opening destination once..."}
               </p>
-              {data?.destinationUrl && (
-                <p className={styles.destinationUrl}>{data.destinationUrl}</p>
-              )}
             </div>
           )
         }
@@ -241,33 +227,11 @@ export default function WayfinderView({
         orbSlot={<VoiceOrb state="success" onActivate={intents?.onReset} />}
         routeCardSlot={
           slots?.successSlot ?? (
-            <section
-              className={styles.stateCard}
-              aria-label="Navigation complete"
-            >
-              <div className={styles.cardBody}>
-                <span className={styles.cardEyebrow}>Completed</span>
-                <p className={styles.destinationName}>
-                  {data?.destinationName
-                    ? `Opened ${data.destinationName}.`
-                    : "Website opened."}
-                </p>
-                <p className={styles.stateBody}>
-                  Wayfinder stopped after opening the destination once.
-                </p>
-              </div>
-              {intents?.onReset && (
-                <div className={styles.actionsRow}>
-                  <button
-                    type="button"
-                    className={styles.secondaryButton}
-                    onClick={intents.onReset}
-                  >
-                    Open another
-                  </button>
-                </div>
-              )}
-            </section>
+            <SuccessView
+              destination={destination}
+              elapsedMs={data?.elapsedMs}
+              onReset={intents?.onReset ?? noop}
+            />
           )
         }
       />
@@ -282,28 +246,13 @@ export default function WayfinderView({
       orbSlot={<VoiceOrb state="error" onActivate={intents?.onRetry} />}
       routeCardSlot={
         slots?.errorSlot ?? (
-          <section
-            className={`${styles.stateCard} ${styles.stateCardError}`}
-            role="alert"
-            aria-label="Error details"
-          >
-            <div className={styles.cardBody}>
-              <span className={styles.cardEyebrow}>Error — couldn&apos;t open</span>
-              <p className={styles.errorMessage}>
-                {data?.errorMessage ??
-                  "Wayfinder could not open that destination. Please try again."}
-              </p>
-            </div>
-            <div className={styles.actionsRow}>
-              <button
-                type="button"
-                className={styles.primaryButton}
-                onClick={intents?.onRetry}
-              >
-                Retry
-              </button>
-            </div>
-          </section>
+          <ErrorView
+            situation={data?.errorSituation ?? "nav_failed"}
+            failedUtterance={data?.heardText}
+            destinationLabel={data?.destinationName}
+            onRetryClick={intents?.onRetry}
+            onCancel={intents?.onCancel}
+          />
         )
       }
     />
