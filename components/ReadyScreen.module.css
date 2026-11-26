@@ -1,0 +1,200 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   WAYFINDER — Ready Screen (A5)
+   Consumes A1 design tokens with accessible fallbacks.
+   Visual hierarchy: VoiceOrb (primary) -> Text input (secondary) -> Chips (tertiary).
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.heading {
+  font-family: var(--font-serif, Georgia, serif);
+  font-size: var(--text-heading-size, clamp(1.375rem, 3.2vw, 1.75rem));
+  font-weight: var(--text-heading-weight, 400);
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+  color: var(--color-text-primary, #0d0d0d);
+}
+
+.container {
+  width: 100%;
+  min-width: 0;
+  max-width: 460px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-24, 24px);
+}
+
+/* ─── Secondary: Text Entry ───────────────────────────────────────────────── */
+
+.form {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12, 12px);
+}
+
+.dividerRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12, 12px);
+  width: 100%;
+}
+
+.dividerLine {
+  flex: 1;
+  height: 1px;
+  background: var(--color-border, rgba(13, 13, 13, 0.1));
+}
+
+.inputLabel {
+  font-size: var(--text-meta-size, 0.8125rem);
+  font-weight: var(--text-meta-weight, 500);
+  color: var(--color-text-secondary, #4b5563);
+  white-space: nowrap;
+}
+
+.inputRow {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-8, 8px);
+  width: 100%;
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 var(--space-16, 16px);
+  border-radius: var(--radius-button, 12px);
+  border: 1px solid var(--color-border-strong, rgba(13, 13, 13, 0.42));
+  background: var(--color-surface, #ffffff);
+  color: var(--color-text-primary, #0d0d0d);
+  font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
+  font-size: var(--text-support-size, 0.9375rem);
+  line-height: 1.4;
+  transition:
+    border-color var(--motion-fast, 150ms) var(--ease-standard, ease),
+    box-shadow var(--motion-fast, 150ms) var(--ease-standard, ease);
+}
+
+.input::placeholder {
+  color: var(--color-text-secondary, #52525b);
+  opacity: 1;
+}
+
+.input:focus-visible {
+  outline: var(--focus-width, 2.5px) solid var(--focus-ring, var(--color-focus, #2b180a));
+  outline-offset: var(--focus-offset, 2px);
+  border-color: var(--color-accent, #2b180a);
+}
+
+.input[aria-invalid="true"] {
+  border-color: var(--color-error, #b91c1c);
+}
+
+.submitButton {
+  min-height: 44px;
+  min-width: 60px;
+  padding: 0 var(--space-20, 20px);
+  flex-shrink: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-button, 12px);
+  background: var(--color-accent, #2b180a);
+  color: var(--color-surface, #ffffff);
+  font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
+  font-size: var(--text-button-size, 0.9375rem);
+  font-weight: var(--text-button-weight, 600);
+  line-height: 1;
+  cursor: pointer;
+  transition: opacity var(--motion-fast, 150ms) var(--ease-standard, ease);
+}
+
+.submitButton:hover {
+  opacity: 0.9;
+}
+
+.submitButton:focus-visible {
+  outline: var(--focus-width, 2.5px) solid var(--focus-ring, var(--color-focus, #2b180a));
+  outline-offset: var(--focus-offset, 2px);
+}
+
+.emptyHint {
+  font-size: var(--text-meta-size, 0.8125rem);
+  font-weight: 500;
+  color: var(--color-error, #b91c1c);
+  text-align: left;
+  padding-left: var(--space-4, 4px);
+  overflow-wrap: break-word;
+}
+
+/* ─── Tertiary: Quick Destination Chips ───────────────────────────────────── */
+
+.chipsSection {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-8, 8px);
+}
+
+.chipsLabel {
+  font-size: var(--text-meta-size, 0.75rem);
+  font-weight: var(--text-meta-weight, 500);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary, #4b5563);
+}
+
+.chipsList {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-8, 8px);
+  width: 100%;
+}
+
+.chipButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  max-width: 100%;
+  padding: var(--space-8, 8px) var(--space-16, 16px);
+  border-radius: var(--radius-chip, 999px);
+  border: 1px solid var(--color-border-strong, rgba(13, 13, 13, 0.34));
+  background: var(--color-surface, #ffffff);
+  color: var(--color-text-primary, #0d0d0d);
+  font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
+  font-size: var(--text-meta-size, 0.875rem);
+  font-weight: 500;
+  line-height: 1.2;
+  text-align: center;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  transition:
+    border-color var(--motion-fast, 150ms) var(--ease-standard, ease),
+    background-color var(--motion-fast, 150ms) var(--ease-standard, ease);
+}
+
+.chipButton:hover {
+  border-color: var(--color-accent, #2b180a);
+}
+
+.chipButton:focus-visible {
+  outline: var(--focus-width, 2.5px) solid var(--focus-ring, var(--color-focus, #2b180a));
+  outline-offset: var(--focus-offset, 2px);
+}
+
+@media (max-width: 640px) {
+  .container {
+    gap: var(--space-16, 16px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .input,
+  .submitButton,
+  .chipButton {
+    transition-duration: 0.01ms !important;
+  }
+}
