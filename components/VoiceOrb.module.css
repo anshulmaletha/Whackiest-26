@@ -1,0 +1,315 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   WAYFINDER — Voice Orb (A3)
+   Consumes A1 design tokens with accessible fallbacks.
+   Every state is differentiated by glyph + ring geometry + text label
+   so it remains clear without color or animation.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.container {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-12, 12px);
+  width: 100%;
+  min-width: 0;
+  max-width: 280px;
+  text-align: center;
+}
+
+.orbButton,
+.orbStatic {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 120px;
+  height: 120px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-orb, 50%);
+  background: transparent;
+  color: var(--color-text-primary, #0d0d0d);
+}
+
+.orbButton {
+  cursor: pointer;
+}
+
+.orbButton:focus-visible {
+  outline: var(--focus-width, 2.5px) solid var(--focus-ring, var(--color-focus, #2b180a));
+  outline-offset: var(--focus-offset, 4px);
+}
+
+.orbStatic {
+  cursor: default;
+}
+
+.orbFrame {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 120px;
+  height: 120px;
+  border-radius: var(--radius-orb, 50%);
+}
+
+.outerRing {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-orb, 50%);
+  border: 1.5px solid var(--color-border-strong, rgba(13, 13, 13, 0.24));
+  pointer-events: none;
+  transition:
+    transform var(--motion-base, 240ms) var(--ease-standard, ease),
+    border-color var(--motion-base, 240ms) var(--ease-standard, ease),
+    opacity var(--motion-base, 240ms) var(--ease-standard, ease);
+}
+
+.orbCore {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 92px;
+  height: 92px;
+  border-radius: var(--radius-orb, 50%);
+  background: var(--color-surface, #ffffff);
+  border: 2px solid var(--color-border-strong, rgba(13, 13, 13, 0.32));
+  box-shadow: var(--shadow-orb, 0 4px 20px rgba(13, 13, 13, 0.08));
+  transition:
+    transform var(--motion-fast, 160ms) var(--ease-standard, ease),
+    border-color var(--motion-base, 240ms) var(--ease-standard, ease),
+    background-color var(--motion-base, 240ms) var(--ease-standard, ease),
+    box-shadow var(--motion-base, 240ms) var(--ease-standard, ease);
+}
+
+.orbButton:hover .orbCore {
+  transform: scale(1.03);
+}
+
+.orbButton:active .orbCore {
+  transform: scale(0.98);
+}
+
+.glyph {
+  width: 30px;
+  height: 30px;
+  display: block;
+}
+
+.arcRing {
+  position: absolute;
+  inset: 2px;
+  width: calc(100% - 4px);
+  height: calc(100% - 4px);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.arcTrack {
+  stroke: var(--color-border, rgba(13, 13, 13, 0.12));
+}
+
+.arcIndicator {
+  transform-origin: 60px 60px;
+}
+
+.label {
+  font-size: var(--text-state-size, 0.9375rem);
+  font-weight: var(--text-state-weight, 500);
+  line-height: 1.4;
+  color: var(--color-text-primary, #0d0d0d);
+  min-height: 1.4em;
+  max-width: 100%;
+  overflow-wrap: break-word;
+}
+
+/* ─── State 1: Idle ───────────────────────────────────────────────────────── */
+
+.container[data-orb-state="idle"] .orbCore {
+  color: var(--color-text-primary, #0d0d0d);
+  border-color: var(--color-border-strong, rgba(13, 13, 13, 0.35));
+  animation: orb-breathe var(--motion-slow, 4s) var(--ease-standard, ease-in-out) infinite;
+}
+
+/* ─── State 2: Listening ──────────────────────────────────────────────────── */
+
+.container[data-orb-state="listening"] .orbCore {
+  color: var(--color-accent, #2b180a);
+  border-width: 2.5px;
+  border-color: var(--color-accent, #2b180a);
+  box-shadow: var(--shadow-orb, 0 0 0 6px rgba(43, 24, 10, 0.08));
+}
+
+.container[data-orb-state="listening"] .outerRing {
+  border-width: 2px;
+  border-color: var(--color-accent, #2b180a);
+  animation: orb-listen-pulse 1.6s var(--ease-standard, ease-out) infinite;
+}
+
+/* ─── State 3: Processing ─────────────────────────────────────────────────── */
+
+.container[data-orb-state="processing"] .orbCore {
+  color: var(--color-warning, #b45309);
+  border-style: dashed;
+  border-color: var(--color-warning, #b45309);
+}
+
+.container[data-orb-state="processing"] .outerRing {
+  border-style: dotted;
+  border-color: var(--color-warning, #b45309);
+  opacity: 0.55;
+}
+
+.container[data-orb-state="processing"] .arcIndicator {
+  stroke: var(--color-warning, #b45309);
+  stroke-dasharray: 96 244;
+  animation: orb-spin 1.1s linear infinite;
+}
+
+/* ─── State 4: Navigating ─────────────────────────────────────────────────── */
+
+.container[data-orb-state="navigating"] .orbCore {
+  color: var(--color-accent, #2b180a);
+  border-width: 2.5px;
+  border-color: var(--color-accent, #2b180a);
+}
+
+.container[data-orb-state="navigating"] .outerRing {
+  border-color: var(--color-accent, #2b180a);
+  opacity: 0.45;
+}
+
+.container[data-orb-state="navigating"] .arcIndicator {
+  stroke: var(--color-accent, #2b180a);
+  stroke-dasharray: 245 340;
+  transform: rotate(-90deg);
+}
+
+.container[data-orb-state="navigating"] .glyph {
+  animation: orb-nudge 1.2s var(--ease-standard, ease-in-out) infinite;
+}
+
+/* ─── State 5: Success (Static) ───────────────────────────────────────────── */
+
+.container[data-orb-state="success"] .orbCore {
+  color: var(--color-success, #15803d);
+  border-width: 2.5px;
+  border-color: var(--color-success, #15803d);
+}
+
+.container[data-orb-state="success"] .outerRing {
+  border-width: 2px;
+  border-color: var(--color-success, #15803d);
+  opacity: 0.5;
+}
+
+/* ─── State 6: Error (Static) ─────────────────────────────────────────────── */
+
+.container[data-orb-state="error"] .orbCore {
+  color: var(--color-error, #b91c1c);
+  border-width: 2.5px;
+  border-style: dashed;
+  border-color: var(--color-error, #b91c1c);
+}
+
+.container[data-orb-state="error"] .outerRing {
+  border-width: 2px;
+  border-style: double;
+  border-color: var(--color-error, #b91c1c);
+  opacity: 0.75;
+}
+
+/* ─── Keyframes ───────────────────────────────────────────────────────────── */
+
+@keyframes orb-breathe {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.025);
+  }
+}
+
+@keyframes orb-listen-pulse {
+  0% {
+    transform: scale(0.92);
+    opacity: 0.85;
+  }
+  100% {
+    transform: scale(1.16);
+    opacity: 0;
+  }
+}
+
+@keyframes orb-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes orb-nudge {
+  0%, 100% {
+    transform: translateX(-2px);
+  }
+  50% {
+    transform: translateX(3px);
+  }
+}
+
+/* ─── Responsive Sizing (<= 640px mobile) ─────────────────────────────────── */
+
+@media (max-width: 640px) {
+  .orbButton,
+  .orbStatic,
+  .orbFrame {
+    width: 104px;
+    height: 104px;
+  }
+
+  .orbCore {
+    width: 80px;
+    height: 80px;
+  }
+
+  .glyph {
+    width: 26px;
+    height: 26px;
+  }
+}
+
+/* ─── Reduced Motion (Mandatory Static Clarity) ───────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .container[data-orb-state="idle"] .orbCore,
+  .container[data-orb-state="listening"] .outerRing,
+  .container[data-orb-state="processing"] .arcIndicator,
+  .container[data-orb-state="navigating"] .glyph {
+    animation: none !important;
+  }
+
+  .container[data-orb-state="listening"] .outerRing {
+    transform: scale(1);
+    opacity: 0.75;
+  }
+
+  .container[data-orb-state="processing"] .arcIndicator {
+    transform: rotate(-45deg);
+  }
+
+  .orbCore,
+  .outerRing {
+    transition-duration: 0.01ms !important;
+  }
+
+  .orbButton:hover .orbCore,
+  .orbButton:active .orbCore {
+    transform: none;
+  }
+}
