@@ -37,3 +37,10 @@ def api_resolve(req: ResolveRequest):
 def api_open(req: OpenRequest):
     # If the repo has an existing browser function, pass it as navigate_fn=...
     return open_destination(req.destinationId)
+
+from fastapi.responses import FileResponse  # add at the top
+
+# add at the bottom:
+@app.get("/")
+def home():
+    return FileResponse("wayfinder_voice_test.html")

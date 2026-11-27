@@ -20,6 +20,34 @@ DESTINATIONS = {
         "url": "https://www.orionmalls.com",
         "aliases": ["orion mall", "orion", "orion malls", "orion mall bangalore"],
     },
+    "youtube": {
+        "id": "youtube",
+        "label": "YouTube",
+        "host": "www.youtube.com",
+        "url": "https://www.youtube.com",
+        "aliases": ["youtube", "you tube", "yt"],
+    },
+    "flipkart": {
+        "id": "flipkart",
+        "label": "Flipkart",
+        "host": "www.flipkart.com",
+        "url": "https://www.flipkart.com",
+        "aliases": ["flipkart", "flip kart"],
+    },
+    "google": {
+        "id": "google",
+        "label": "Google",
+        "host": "www.google.com",
+        "url": "https://www.google.com",
+        "aliases": ["google", "google search"],
+    },
+    "github": {
+        "id": "github",
+        "label": "GitHub",
+        "host": "github.com",
+        "url": "https://github.com",
+        "aliases": ["github", "git hub"],
+    },
 }
 
 FILLER_PREFIXES = (
