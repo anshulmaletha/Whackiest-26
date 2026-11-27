@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Wayfinder Voice Test</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 520px;
+      margin: 48px auto;
+      padding: 0 20px;
+      background: #0f172a;
+      color: #f8fafc;
+    }
+    h1 { font-size: 1.5rem; margin-bottom: 6px; }
+    p.sub { color: #94a3b8; margin-top: 0; font-size: 0.95rem; }
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 20px;
+      margin-top: 20px;
+    }
+    button {
+      background: #3b82f6;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 12px 18px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    button.listening { background: #ef4444; }
+    .row { display: flex; gap: 8px; margin-top: 14px; }
+    input {
+      flex: 1;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid #475569;
+      background: #0f172a;
+      color: #f8fafc;
+      font-size: 0.95rem;
+    }
+    .log {
+      margin-top: 16px;
+      padding: 12px;
+      background: #0f172a;
+      border-radius: 8px;
+      font-family: ui-monospace, monospace;
+      font-size: 0.85rem;
+      white-space: pre-wrap;
+      color: #cbd5e1;
+      min-height: 80px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Wayfinder Voice Integration Test</h1>
+  <p class="sub">Speaks to your local backend at <code>http://127.0.0.1:8000</code></p>
+
+  <div class="card">
+    <button id="micBtn">Tap to Speak</button>
+
+    <div class="row">
+      <input id="textInput" type="text" placeholder='Or type e.g. "Open Amazon"' />
+      <button id="sendBtn" type="button">Send</button>
+    </div>
+
+    <div id="log" class="log">Ready. Tap the mic and say "Open Amazon" or "Open Orion Mall".</div>
+  </div>
+
+  <script>
+    const API_BASE = "http://127.0.0.1:8000";
+    const micBtn = document.getElementById("micBtn");
+    const sendBtn = document.getElementById("sendBtn");
+    const textInput = document.getElementById("textInput");
+    const logEl = document.getElementById("log");
+
+    const setLog = (msg) => { logEl.textContent = msg; };
+
+    async function resolveAndOpen(utterance, source) {
+      setLog(`Heard (${source}): "${utterance}"\nResolving...`);
+      try {
+        const res = await fetch(`${API_BASE}/api/resolve`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ utterance, source }),
+        });
+        const resolved = await res.json();
+
+        if (resolved.status !== "matched" || !resolved.destination) {
+          setLog(`Heard: "${utterance}"\nStatus: ${resolved.status}\nSuggestions: ${JSON.stringify(resolved.suggestions)}`);
+          return;
+        }
+
+        const dest = resolved.destination;
+        setLog(`Matched: ${dest.label} (${dest.host})\nOpening once...`);
+
+        const openRes = await fetch(`${API_BASE}/api/open`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ destinationId: dest.id }),
+        });
+        const opened = await openRes.json();
+
+        if (opened.status === "opened") {
+          setLog(`Opened ${dest.label} in ${opened.elapsedMs} ms.\nI've stopped here.`);
+        } else {
+          setLog(`Failed to open ${dest.label}: ${opened.error || "Unknown error"}`);
+        }
+      } catch (err) {
+        setLog(`Backend unreachable at ${API_BASE}. Make sure uvicorn is running.\n${err.message}`);
+      }
+    }
+
+    sendBtn.addEventListener("click", () => {
+      const val = textInput.value.trim();
+      if (val) resolveAndOpen(val, "text");
+    });
+
+    textInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") sendBtn.click();
+    });
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      micBtn.disabled = true;
+      micBtn.textContent = "Mic unsupported (use Chrome)";
+    } else {
+      const recognition = new SpeechRecognition();
+      recognition.lang = "en-IN";
+      recognition.interimResults = true;
+      recognition.maxAlternatives = 1;
+
+      let silenceTimer = null;
+
+      micBtn.addEventListener("click", () => {
+        micBtn.classList.add("listening");
+        micBtn.textContent = "Listening...";
+        setLog("Listening... say 'Open Amazon' or 'Open Orion Mall'.");
+        recognition.start();
+
+        clearTimeout(silenceTimer);
+        silenceTimer = setTimeout(() => {
+          recognition.stop();
+        }, 8000);
+      });
+
+      recognition.onresult = (event) => {
+        const result = event.results[event.results.length - 1];
+        const transcript = result[0].transcript.trim();
+        if (result.isFinal) {
+          clearTimeout(silenceTimer);
+          micBtn.classList.remove("listening");
+          micBtn.textContent = "Tap to Speak";
+          resolveAndOpen(transcript, "voice");
+        } else {
+          setLog(`Listening (interim): "${transcript}"`);
+        }
+      };
+
+      recognition.onerror = (event) => {
+        clearTimeout(silenceTimer);
+        micBtn.classList.remove("listening");
+        micBtn.textContent = "Tap to Speak";
+        setLog(`Mic error: ${event.error}. You can type instead.`);
+      };
+
+      recognition.onend = () => {
+        clearTimeout(silenceTimer);
+        micBtn.classList.remove("listening");
+        micBtn.textContent = "Tap to Speak";
+      };
+    }
+  </script>
+</body>
+</html>
